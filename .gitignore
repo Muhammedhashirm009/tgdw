@@ -1,0 +1,7 @@
+/bot-app
+/data
+*.sqlite
+/node_modules
+.env
+/fix_db.go
+/databasecred.md

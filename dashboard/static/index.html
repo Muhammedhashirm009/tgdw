@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Cloud Transfer</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="logo">
+                <h2>Cloud Transfer</h2>
+            </div>
+            <nav class="menu">
+                <a href="#" class="active" data-view="overview">Dashboard</a>
+                <a href="#" data-view="tasks">Task Manager</a>
+                <a href="#" data-view="settings">Settings</a>
+            </nav>
+        </aside>
+
+        <main class="main-content">
+            <header>
+                <div class="status-summary">
+                    <div class="stat-card">
+                        <h3>Active Downloads</h3>
+                        <p id="active-downloads">0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Active Uploads</h3>
+                        <p id="active-uploads">0</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3>System Status</h3>
+                        <p id="system-status" class="status-ok">Online</p>
+                    </div>
+                </div>
+            </header>
+
+            <section class="content-area">
+                <div id="overview-view" class="view active">
+                    <h2>Recent Activity</h2>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>File</th>
+                                    <th>Type</th>
+                                    <th>Progress</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tasks-table-body">
+                                <tr>
+                                    <td colspan="4" class="empty-state">No current tasks.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="tasks-view" class="view">
+                    <h2>All Tasks</h2>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>File Name</th>
+                                    <th>Type</th>
+                                    <th>Status</th>
+                                    <th>Links</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="5" class="empty-state">No tasks to display.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="settings-view" class="view">
+                    <h2>Bot Settings</h2>
+                    <p style="color: var(--text-secondary); margin-bottom: 24px;">Configure your Telegram Bot and Google
+                        Drive integration.</p>
+
+                    <div class="settings-form">
+                        <div class="form-group">
+                            <label for="botToken">Telegram Bot Token</label>
+                            <input type="text" id="botToken" placeholder="1234567890:AA..." />
+                        </div>
+                        <div class="form-group">
+                            <label for="googleClientId">Google Client ID</label>
+                            <input type="text" id="googleClientId" placeholder="client-id.apps.googleusercontent.com" />
+                        </div>
+                        <div class="form-group">
+                            <label for="googleClientSecret">Google Client Secret</label>
+                            <input type="password" id="googleClientSecret" placeholder="Client Secret" />
+                        </div>
+                        <div class="form-group"
+                            style="padding: 16px; background: rgba(0,0,0,0.1); border-radius: 8px; border: 1px dashed var(--border-color);">
+                            <h3>Google Drive Integration</h3>
+                            <p id="googleAuthStatus"
+                                style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 12px;">Checking
+                                status...</p>
+                            <a href="/api/auth/google/login" id="googleLoginBtn" class="btn"
+                                style="background-color: white; color: black; text-decoration: none; display: inline-block;">
+                                Connect Google Drive (OAuth)
+                            </a>
+                        </div>
+                        <div class="form-group">
+                            <label for="telegramApiEndpoint">Telegram Bot API Endpoint</label>
+                            <input type="text" id="telegramApiEndpoint" placeholder="http://telegram-bot-api:8081" />
+                            <small style="color: var(--text-secondary); display: block; margin-top: 4px;">Leave as
+                                https://api.telegram.org for standard API</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="telegramApiId">Telegram API ID (Optional)</label>
+                            <input type="text" id="telegramApiId" placeholder="1234567" />
+                        </div>
+                        <div class="form-group">
+                            <label for="telegramApiHash">Telegram API Hash (Optional)</label>
+                            <input type="text" id="telegramApiHash" placeholder="abcdef1234567890abcdef1234567890" />
+                        </div>
+                        <div class="form-group">
+                            <label for="downloadDir">Download Directory</label>
+                            <input type="text" id="downloadDir" placeholder="/data/downloads" />
+                        </div>
+                        <div class="form-group">
+                            <label for="maxFileSize">Max File Size (Bytes)</label>
+                            <input type="number" id="maxFileSize" placeholder="0 (Unlimited)" />
+                        </div>
+                        <div class="form-group">
+                            <label for="concurrentTasks">Concurrent Tasks</label>
+                            <input type="number" id="concurrentTasks" value="3" />
+                        </div>
+                        <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
+                        <p id="settings-msg" style="margin-top: 10px;"></p>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
