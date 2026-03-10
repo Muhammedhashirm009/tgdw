@@ -2,9 +2,13 @@ package dashboard
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/downloader/telegram-cloud-transfer/database"
 	"golang.org/x/oauth2"
@@ -12,7 +16,14 @@ import (
 )
 
 type Server struct {
-	addr string
+	addr     string
+	sessions sync.Map // Map[token]username
+}
+
+func generateSessionToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func NewServer(addr string) *Server {
@@ -23,20 +34,60 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	
 	// API routes
-	mux.HandleFunc("/api/status", s.handleStatus)
-	mux.HandleFunc("/api/tasks", s.handleTasks)
-	mux.HandleFunc("/api/cancel", s.handleTaskCancel)
-	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/status", s.authMiddleware(s.handleStatus))
+	mux.HandleFunc("/api/tasks", s.authMiddleware(s.handleTasks))
+	mux.HandleFunc("/api/cancel", s.authMiddleware(s.handleTaskCancel))
+	mux.HandleFunc("/api/settings", s.authMiddleware(s.handleSettings))
+	
+	// Public API routes
 	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/auth/google/login", s.handleGoogleLogin)
+	mux.HandleFunc("/api/auth/google/login", s.authMiddleware(s.handleGoogleLogin))
 	mux.HandleFunc("/api/auth/google/callback", s.handleGoogleCallback)
 	
-	// Static files
-	fs := http.FileServer(http.Dir("./dashboard/static"))
-	mux.Handle("/", fs)
+	// Static files with static auth
+	mux.HandleFunc("/", s.staticAuthMiddleware)
 	
 	log.Printf("Starting Web Dashboard on %s\n", s.addr)
 	return http.ListenAndServe(s.addr, mux)
+}
+
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("auth_token")
+		if err != nil {
+			http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
+		if _, ok := s.sessions.Load(cookie.Value); !ok {
+			http.Error(w, `{"error": "Unauthorized session"}`, http.StatusUnauthorized)
+			return
+		}
+		
+		next(w, r)
+	}
+}
+
+func (s *Server) staticAuthMiddleware(w http.ResponseWriter, r *http.Request) {
+	// Let login.html pass freely
+	if strings.Contains(r.URL.Path, "login.html") || strings.Contains(r.URL.Path, "style.css") {
+		http.FileServer(http.Dir("./dashboard/static")).ServeHTTP(w, r)
+		return
+	}
+
+	// Verify cookie before serving the static dashboard or JS
+	cookie, err := r.Cookie("auth_token")
+	if err != nil {
+		http.Redirect(w, r, "/login.html", http.StatusTemporaryRedirect)
+		return
+	}
+
+	if _, ok := s.sessions.Load(cookie.Value); !ok {
+		http.Redirect(w, r, "/login.html", http.StatusTemporaryRedirect)
+		return
+	}
+	
+	http.FileServer(http.Dir("./dashboard/static")).ServeHTTP(w, r)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -146,9 +197,38 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	// TODO: Handle auth securely
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success": true}`))
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	if database.VerifyUser(req.Username, req.Password) {
+		token := generateSessionToken()
+		s.sessions.Store(token, req.Username)
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     "auth_token",
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			Expires:  time.Now().Add(24 * time.Hour),
+		})
+
+		w.Write([]byte(`{"success": true}`))
+	} else {
+		w.Write([]byte(`{"success": false, "error": "Invalid username or password"}`))
+	}
 }
 
 func getOAuthConfig(settings database.Settings, r *http.Request) *oauth2.Config {

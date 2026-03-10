@@ -9,6 +9,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var DB *sql.DB
@@ -137,7 +138,38 @@ func createTables() error {
 	DB.Exec("ALTER TABLE tasks ADD COLUMN elapsed_time VARCHAR(50) DEFAULT ''")
 
 	log.Println("Database tables verified/created successfully")
-	return nil
+	return EnsureAdminUser()
+}
+
+// EnsureAdminUser checks if the admin user exists, and if not, creates it with default credentials
+func EnsureAdminUser() error {
+	var id int
+	err := DB.QueryRow("SELECT id FROM users WHERE username = 'admin' LIMIT 1").Scan(&id)
+	if err == sql.ErrNoRows {
+		// Create admin user
+		hash, err := bcrypt.GenerateFromPassword([]byte("99901234"), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		_, err = DB.Exec("INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)", "admin", "admin@localhost", string(hash), "admin")
+		if err != nil {
+			return err
+		}
+		log.Println("Admin user created successfully")
+		return nil
+	}
+	return err
+}
+
+// VerifyUser checks the given username and password against the database
+func VerifyUser(username, password string) bool {
+	var hash string
+	err := DB.QueryRow("SELECT password_hash FROM users WHERE username = ?", username).Scan(&hash)
+	if err != nil {
+		return false
+	}
+	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
 }
 
 func GetSettings() (Settings, error) {
@@ -194,8 +226,6 @@ func UpdateOAuthTokens(id int, accessToken, refreshToken string, expiry time.Tim
 }
 
 func CreateTask(userID int, fileName string, fileSize int64, inputType string) (int, error) {
-	// Seed a dummy user if they don't exist to satisfy the FOREIGN KEY constraint
-	DB.Exec("INSERT IGNORE INTO users (id, username, email, password_hash) VALUES (?, 'admin', 'admin@localhost', 'hash')", userID)
 
 	res, err := DB.Exec(`
 		INSERT INTO tasks (user_id, file_name, file_size, input_type, status) 

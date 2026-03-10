@@ -25,7 +25,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function fetchStatus() {
         console.log("Fetching status from /api/status ...");
         fetch('/api/status')
-            .then(res => res.json())
+            .then(res => {
+                if (res.status === 401) window.location.href = 'login.html';
+                return res.json();
+            })
             .then(data => {
                 document.getElementById('active-downloads').textContent = data.active_downloads || 0;
                 document.getElementById('active-uploads').textContent = data.active_uploads || 0;
@@ -66,7 +69,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function fetchTasks() {
         console.log("Fetching tasks from /api/tasks ...");
         fetch('/api/tasks')
-            .then(res => res.json())
+            .then(res => {
+                if (res.status === 401) window.location.href = 'login.html';
+                return res.json();
+            })
             .then(data => {
                 const overviewBody = document.getElementById('tasks-table-body');
                 const allTasksBody = document.querySelector('#tasks-view tbody');
@@ -205,7 +211,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function loadSettings() {
         fetch('/api/settings')
-            .then(res => res.json())
+            .then(res => {
+                if (res.status === 401) window.location.href = 'login.html';
+                return res.json();
+            })
             .then(data => {
                 if (data.error) return;
                 document.getElementById('botToken').value = data.bot_token || "";
