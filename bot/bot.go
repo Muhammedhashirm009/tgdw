@@ -133,13 +133,13 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 	}
 
 	bh.bot.Edit(msg, "Task queued. Starting download...")
-	database.UpdateTaskStatus(taskID, "Downloading", "")
+	database.UpdateTaskStatus(taskID, "Downloading", "", "")
 
 	// Run in background
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				database.UpdateTaskStatus(taskID, "Failed", "")
+				database.UpdateTaskStatus(taskID, "Failed", "", "")
 				bh.bot.Edit(msg, fmt.Sprintf("Task %d failed unexpectedly.", taskID))
 			}
 		}()
@@ -147,7 +147,7 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 		// Get Telegram File Path
 		file, err := bh.bot.FileByID(doc.FileID)
 		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "")
+			database.UpdateTaskStatus(taskID, "Failed", "", "")
 			bh.bot.Edit(msg, "Error getting file from Telegram: "+err.Error())
 			return
 		}
@@ -194,14 +194,14 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			})
 
 			if err != nil {
-				database.UpdateTaskStatus(taskID, "Failed", "")
+				database.UpdateTaskStatus(taskID, "Failed", "", "")
 				bh.bot.Edit(msg, "Download Failed: "+err.Error())
 				return
 			}
 		}
 
 		database.UpdateTaskDownloadProgress(taskID, 100, 0)
-		database.UpdateTaskStatus(taskID, "Uploading", "")
+		database.UpdateTaskStatus(taskID, "Uploading", "", "")
 		bh.bot.Edit(msg, fmt.Sprintf("Task %d: Starting Upload to Google Drive...\nFile: %s", taskID, doc.FileName))
 
 		// 2. Upload to Google Drive
@@ -214,14 +214,14 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 
 		uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
 		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "")
+			database.UpdateTaskStatus(taskID, "Failed", "", "")
 			bh.bot.Edit(msg, "Upload Failed Setup: "+err.Error())
 			return
 		}
 
 		lastUpdate := time.Now()
 		startTime := time.Now()
-		driveLink, err := uploaderInstance.UploadFile(downloadPath, func(uploaded, total, speed int64) {
+		driveLink, driveFileID, err := uploaderInstance.UploadFile(downloadPath, func(uploaded, total, speed int64) {
 			if time.Since(lastUpdate) > 2*time.Second {
 				progress := int((float64(uploaded) / float64(total)) * 100)
 				database.UpdateTaskUploadProgress(taskID, progress, speed)
@@ -244,13 +244,13 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 		})
 
 		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "")
+			database.UpdateTaskStatus(taskID, "Failed", "", "")
 			bh.bot.Edit(msg, "Upload Failed: "+err.Error())
 			return
 		}
 
 		database.UpdateTaskUploadProgress(taskID, 100, 0)
-		database.UpdateTaskStatus(taskID, "Completed", driveLink)
+		database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID)
 		bh.bot.Edit(msg, fmt.Sprintf("Task %d Completed!\nFile: %s\nGoogle Drive Link: %s", taskID, doc.FileName, driveLink))
 	}()
 
