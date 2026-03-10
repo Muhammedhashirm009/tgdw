@@ -5,19 +5,10 @@ services:
     build: .
     ports:
       - "9990:9990"
-    restart: unless-stopped
-    depends_on:
-      - telegram-bot-api
-
-  # Local Telegram Bot API Server (Bypasses 20MB bot limit)
-  telegram-bot-api:
-    image: aiogram/telegram-bot-api:latest
+      - "8081:8081"
     environment:
       - TELEGRAM_API_ID=YOUR_API_ID_HERE
       - TELEGRAM_API_HASH=YOUR_API_HASH_HERE
-      - TELEGRAM_STAT=1
-    ports:
-      - "8081:8081"
     volumes:
       - ./data/telegram-api:/var/lib/telegram-bot-api
     restart: unless-stopped

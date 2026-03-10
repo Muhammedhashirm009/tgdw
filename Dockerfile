@@ -12,21 +12,29 @@ COPY . .
 # Build the main executable
 RUN CGO_ENABLED=0 GOOS=linux go build -o bot-app ./main.go
 
-# Start a new stage from scratch
-FROM alpine:latest
+# Start a new stage using the official Telegram Bot API proxy
+FROM aiogram/telegram-bot-api:latest
 
-# Install necessary certificates
+USER root
+# Install necessary certificates for Go
 RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy the pre-built binary
+# Copy the pre-built Go binary
 COPY --from=builder /app/bot-app .
 # Copy static files for the dashboard
 COPY --from=builder /app/dashboard/static ./dashboard/static
+# Copy the wrapper script
+COPY start.sh .
 
-# Expose port for the dashboard
+RUN chmod +x start.sh
+
+# Expose port for the dashboard (API runs internally on 8081)
 EXPOSE 9990
 
-# Command to run
-CMD ["./bot-app"]
+# The aiogram image has a preset ENTRYPOINT, we clear it so our script can run both.
+ENTRYPOINT []
+
+# Command to run both processes
+CMD ["./start.sh"]
