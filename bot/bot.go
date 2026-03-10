@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -23,6 +24,11 @@ func NewBot(token string, apiURL string) (*BotHandler, error) {
 	pref := tele.Settings{
 		Token:  token,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
+		Client: &http.Client{
+			// Give the local Telegram API proxy up to 30 minutes to download a massive file
+			// to its local hard drive before returning the file path to us.
+			Timeout: 30 * time.Minute,
+		},
 	}
 
 	if apiURL != "" && apiURL != "https://api.telegram.org" {
