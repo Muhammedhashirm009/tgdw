@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/downloader/telegram-cloud-transfer/bot"
 	"github.com/downloader/telegram-cloud-transfer/dashboard"
 	"github.com/downloader/telegram-cloud-transfer/database"
+	"github.com/downloader/telegram-cloud-transfer/uploader"
+	"golang.org/x/oauth2"
 )
 
 func main() {
@@ -49,6 +52,48 @@ func main() {
 				log.Printf("Warning: Failed to load settings from DB: %v", err)
 			}
 			time.Sleep(10 * time.Second)
+		}
+	}()
+	
+	// Garbage Collector for Auto-Deleting files older than 48 hours
+	go func() {
+		for {
+			time.Sleep(1 * time.Hour) // Run every hour
+			
+			settings, err := database.GetSettings()
+			if err != nil || settings.AccessToken == "" {
+				continue
+			}
+
+			expiredTasks, err := database.GetExpiredTasks(48)
+			if err != nil || len(expiredTasks) == 0 {
+				continue
+			}
+
+			log.Printf("Garbage Collector found %d tasks older than 48 hours", len(expiredTasks))
+
+			token := &oauth2.Token{
+				AccessToken:  settings.AccessToken,
+				RefreshToken: settings.RefreshToken,
+				Expiry:       settings.TokenExpiry,
+				TokenType:    "Bearer",
+			}
+
+			uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
+			if err != nil {
+				continue
+			}
+
+			for _, task := range expiredTasks {
+				log.Printf("Auto-deleting Google Drive file for Task %d (DriveFileID: %s)", task.ID, task.DriveFileID)
+				err := uploaderInstance.DeleteFile(task.DriveFileID)
+				if err != nil {
+					log.Printf("Failed to delete file from Drive for Task %d: %v", task.ID, err)
+				} else {
+					database.DB.Exec("DELETE FROM tasks WHERE id = ?", task.ID)
+					log.Printf("Successfully deleted and purged Task %d", task.ID)
+				}
+			}
 		}
 	}()
 	

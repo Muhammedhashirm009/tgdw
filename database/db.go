@@ -62,6 +62,7 @@ func createTables() error {
 			upload_speed BIGINT DEFAULT 0,
 			status VARCHAR(50) NOT NULL,
 			drive_link TEXT,
+			drive_file_id VARCHAR(255),
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
@@ -115,6 +116,7 @@ func createTables() error {
 
 	DB.Exec("ALTER TABLE tasks ADD COLUMN download_speed BIGINT DEFAULT 0")
 	DB.Exec("ALTER TABLE tasks ADD COLUMN upload_speed BIGINT DEFAULT 0")
+	DB.Exec("ALTER TABLE tasks ADD COLUMN drive_file_id VARCHAR(255) DEFAULT ''")
 
 	log.Println("Database tables verified/created successfully")
 	return nil
@@ -189,8 +191,8 @@ func CreateTask(userID int, fileName string, fileSize int64, inputType string) (
 	return int(id), err
 }
 
-func UpdateTaskStatus(taskID int, status string, driveLink string) error {
-	_, err := DB.Exec("UPDATE tasks SET status = ?, drive_link = ? WHERE id = ?", status, driveLink, taskID)
+func UpdateTaskStatus(taskID int, status string, driveLink string, driveFileID string) error {
+	_, err := DB.Exec("UPDATE tasks SET status = ?, drive_link = ?, drive_file_id = ? WHERE id = ?", status, driveLink, driveFileID, taskID)
 	return err
 }
 
@@ -205,7 +207,7 @@ func UpdateTaskUploadProgress(taskID int, progress int, speed int64) error {
 }
 
 func GetAllTasks() ([]Task, error) {
-	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, download_speed, upload_speed, status, IFNULL(drive_link, '') as drive_link, created_at FROM tasks ORDER BY id DESC LIMIT 50")
+	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, download_speed, upload_speed, status, IFNULL(drive_link, '') as drive_link, IFNULL(drive_file_id, '') as drive_file_id, created_at FROM tasks ORDER BY id DESC LIMIT 50")
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +216,7 @@ func GetAllTasks() ([]Task, error) {
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.CreatedAt)
+		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.DriveFileID, &t.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -231,4 +233,23 @@ func GetStatusSummary() (int, int, error) {
 	}
 	err = DB.QueryRow("SELECT COUNT(*) FROM tasks WHERE status = 'Uploading'").Scan(&uploads)
 	return downloads, uploads, err
+}
+
+func GetExpiredTasks(hours int) ([]Task, error) {
+	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, download_speed, upload_speed, status, IFNULL(drive_link, '') as drive_link, IFNULL(drive_file_id, '') as drive_file_id, created_at FROM tasks WHERE status = 'Completed' AND drive_file_id != '' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR)", hours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.DriveFileID, &t.CreatedAt)
+		if err != nil {
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
 }

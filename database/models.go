@@ -23,6 +23,7 @@ type Task struct {
 	UploadSpeed      int64     `json:"upload_speed"`
 	Status           string    `json:"status"`
 	DriveLink        string    `json:"drive_link"`
+	DriveFileID      string    `json:"drive_file_id"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 

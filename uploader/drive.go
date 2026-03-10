@@ -69,16 +69,16 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCallback) (string, error) {
+func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCallback) (string, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer file.Close()
 	
 	stat, err := file.Stat()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	
 	reader := &progressReader{
@@ -91,7 +91,7 @@ func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCall
 	f := &drive.File{Name: filepath.Base(filePath)}
 	res, err := du.client.Files.Create(f).Media(reader).Do()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	
 	// Create permission to make it shareable
@@ -101,14 +101,18 @@ func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCall
 	}
 	_, err = du.client.Permissions.Create(res.Id, perm).Do()
 	if err != nil {
-		return "", err // It's still uploaded, but we failed to make it shareable
+		return "", "", err // It's still uploaded, but we failed to make it shareable
 	}
 
 	// Fetch the full file metadata to get the WebViewLink
 	finalFile, err := du.client.Files.Get(res.Id).Fields("webViewLink").Do()
 	if err != nil {
-		return fmt.Sprintf("https://drive.google.com/file/d/%s/view", res.Id), nil
+		return finalFile.WebViewLink, finalFile.Id, nil
 	}
 	
-	return finalFile.WebViewLink, nil
+	return finalFile.WebViewLink, finalFile.Id, nil
+}
+
+func (du *DriveUploader) DeleteFile(fileID string) error {
+	return du.client.Files.Delete(fileID).Do()
 }
