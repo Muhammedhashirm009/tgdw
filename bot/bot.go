@@ -198,7 +198,7 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			return
 		}
 
-		lastUpdate = time.Now()
+		lastUpdate := time.Now()
 		driveLink, err := uploaderInstance.UploadFile(downloadPath, func(uploaded, total int64) {
 			if time.Since(lastUpdate) > 2*time.Second {
 				progress := int((float64(uploaded) / float64(total)) * 100)
