@@ -2,7 +2,6 @@ package uploader
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
