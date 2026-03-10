@@ -39,6 +39,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/tasks", s.authMiddleware(s.handleTasks))
 	mux.HandleFunc("/api/cancel", s.authMiddleware(s.handleTaskCancel))
 	mux.HandleFunc("/api/settings", s.authMiddleware(s.handleSettings))
+	mux.HandleFunc("/api/logout", s.authMiddleware(s.handleLogout))
 	
 	// Public API routes
 	mux.HandleFunc("/api/login", s.handleLogin)
@@ -230,6 +231,30 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Write([]byte(`{"success": false, "error": "Invalid username or password"}`))
 	}
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	cookie, err := r.Cookie("auth_token")
+	if err == nil {
+		s.sessions.Delete(cookie.Value)
+	}
+
+	// Delete client-side cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "auth_token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"success": true}`))
 }
 
 func getOAuthConfig(settings database.Settings, r *http.Request) *oauth2.Config {

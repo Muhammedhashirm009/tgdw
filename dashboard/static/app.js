@@ -21,6 +21,18 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Logout handling
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', () => {
+            fetch('/api/logout', { method: 'POST' })
+                .then(() => {
+                    window.location.href = 'login.html';
+                })
+                .catch(err => console.error("Logout failed", err));
+        });
+    }
+
     // Mock fetching data
     function fetchStatus() {
         console.log("Fetching status from /api/status ...");

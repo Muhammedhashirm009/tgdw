@@ -21,9 +21,17 @@ func RegisterCancelFunc(taskID int, cancel context.CancelFunc) {
 }
 
 func CancelTask(taskID int) bool {
+	// If it's running in memory, cancel it.
 	if cancel, ok := taskCancels.LoadAndDelete(taskID); ok {
 		cancel.(context.CancelFunc)()
-		return true
+	}
+
+	// Always forcefully mark it as cancelled in the database 
+	// to clean up stuck/zombie tasks that aren't actively running.
+	res, err := DB.Exec("UPDATE tasks SET status = 'Cancelled' WHERE id = ? AND status IN ('Downloading', 'Uploading', 'Pending')", taskID)
+	if err == nil {
+		rows, _ := res.RowsAffected()
+		return rows > 0
 	}
 	return false
 }
