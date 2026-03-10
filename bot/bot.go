@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -159,16 +160,87 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			}
 		}()
 
-		// Get Telegram File Path
+		var downloadPath string
+		startTime := time.Now()
+
+		// Background tracker for the local proxy download phase
+		trackCtx, trackCancel := context.WithCancel(context.Background())
+		go func() {
+			var lastSize int64
+			var lastReport time.Time
+			for {
+				select {
+				case <-trackCtx.Done():
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(2 * time.Second):
+					// find most recently modified file in /var/lib/telegram-bot-api
+					var maxSize int64
+					filepath.Walk("/var/lib/telegram-bot-api", func(path string, info os.FileInfo, err error) error {
+						if err != nil || info.IsDir() {
+							return nil
+						}
+						// If modified in the last 10 seconds
+						if time.Since(info.ModTime()) < 10*time.Second {
+							if info.Size() > maxSize {
+								maxSize = info.Size()
+							}
+						}
+						return nil
+					})
+
+					if maxSize > 0 {
+						speed := int64(0)
+						if lastSize > 0 && maxSize > lastSize && !lastReport.IsZero() {
+							speed = int64(float64(maxSize-lastSize) / time.Since(lastReport).Seconds())
+						}
+
+						progress := int((float64(maxSize) / float64(doc.FileSize)) * 100)
+						if progress > 100 {
+							progress = 100
+						}
+
+						database.UpdateTaskDownloadProgress(taskID, progress, speed)
+
+						var eta string
+						if speed > 0 {
+							secondsLeft := (doc.FileSize - maxSize) / speed
+							eta = (time.Duration(secondsLeft) * time.Second).String()
+						} else {
+							eta = "calculating..."
+						}
+
+						elapsed := time.Since(startTime).Round(time.Second).String()
+						humanSpeed := humanize.Bytes(uint64(speed)) + "/s"
+
+						text := fmt.Sprintf("📥 <b>Downloading File [%d]</b>\n\n"+
+							"📄 <b>Name:</b> <code>%s</code>\n"+
+							"📊 <b>Progress:</b> %d%%\n"+
+							"🚀 <b>Speed:</b> %s\n"+
+							"⏳ <b>ETA:</b> %s\n"+
+							"⏱️ <b>Elapsed:</b> %s\n\n"+
+							"<i>Use /cancel %d to abort</i>",
+							taskID, doc.FileName, progress, humanSpeed, eta, elapsed, taskID)
+
+						bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+
+						lastSize = maxSize
+						lastReport = time.Now()
+					}
+				}
+			}
+		}()
+
+		// Get Telegram File Path (This blocks until the local proxy finishes downloading)
 		file, err := bh.bot.FileByID(doc.FileID)
+		trackCancel() // Stop tracking once FileByID completes
+		
 		if err != nil {
 			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
 			bh.bot.Edit(msg, "❌ <b>Error getting file from Telegram:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 			return
 		}
-
-		var downloadPath string
-		startTime := time.Now()
 		
 		// If the file exists locally (from the local Telegram proxy), we don't need to HTTP download it
 		if stat, err := os.Stat(file.FilePath); err == nil && !stat.IsDir() {
