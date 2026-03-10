@@ -10,6 +10,7 @@ COPY go.mod ./
 COPY . .
 
 # Build the main executable
+RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o bot-app ./main.go
 
 # Start a new stage using the official Telegram Bot API proxy
