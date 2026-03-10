@@ -1,6 +1,6 @@
 module github.com/downloader/telegram-cloud-transfer
 
-go 1.25.0
+go 1.22.0
 
 require (
 	github.com/anacrolix/torrent v1.61.0
