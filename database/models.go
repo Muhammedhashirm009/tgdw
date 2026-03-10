@@ -19,6 +19,8 @@ type Task struct {
 	InputType        string    `json:"input_type"`
 	DownloadProgress int       `json:"download_progress"`
 	UploadProgress   int       `json:"upload_progress"`
+	DownloadSpeed    int64     `json:"download_speed"`
+	UploadSpeed      int64     `json:"upload_speed"`
 	Status           string    `json:"status"`
 	DriveLink        string    `json:"drive_link"`
 	CreatedAt        time.Time `json:"created_at"`

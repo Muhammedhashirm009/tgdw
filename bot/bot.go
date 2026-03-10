@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/downloader/telegram-cloud-transfer/database"
 	"github.com/downloader/telegram-cloud-transfer/downloader"
 	"github.com/downloader/telegram-cloud-transfer/uploader"
@@ -156,8 +157,8 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 		// If the file exists locally (from the local Telegram proxy), we don't need to HTTP download it
 		if stat, err := os.Stat(file.FilePath); err == nil && !stat.IsDir() {
 			downloadPath = file.FilePath
-			database.UpdateTaskDownloadProgress(taskID, 100)
-			bh.bot.Edit(msg, fmt.Sprintf("Task %d: File accessed locally. Skipping HTTP download.", taskID))
+			database.UpdateTaskDownloadProgress(taskID, 100, 0)
+			bh.bot.Edit(msg, fmt.Sprintf("Task %d: File accessed locally.\nFile: %s\nStatus: Skipping HTTP download.", taskID, doc.FileName))
 		} else {
 			// Construct download URL using custom API endpoint
 			apiBase := settings.TelegramAPIEndpoint
@@ -167,13 +168,27 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			fileURL := fmt.Sprintf("%s/file/bot%s/%s", apiBase, settings.BotToken, file.FilePath)
 
 			lastUpdate := time.Now()
+			startTime := time.Now()
 			
 			// 1. Download
-			downloadPath, err = downloader.DownloadHTTP(fileURL, settings.DownloadDirectory, doc.FileName, func(downloaded, total int64) {
+			downloadPath, err = downloader.DownloadHTTP(fileURL, settings.DownloadDirectory, doc.FileName, func(downloaded, total, speed int64) {
 				if time.Since(lastUpdate) > 2*time.Second {
 					progress := int((float64(downloaded) / float64(total)) * 100)
-					database.UpdateTaskDownloadProgress(taskID, progress)
-					bh.bot.Edit(msg, fmt.Sprintf("Task %d: Downloading %d%%", taskID, progress))
+					database.UpdateTaskDownloadProgress(taskID, progress, speed)
+					
+					var eta string
+					if speed > 0 {
+						secondsLeft := (total - downloaded) / speed
+						eta = (time.Duration(secondsLeft) * time.Second).String()
+					} else {
+						eta = "calculating..."
+					}
+					
+					elapsed := time.Since(startTime).Round(time.Second).String()
+					humanSpeed := humanize.Bytes(uint64(speed)) + "/s"
+					
+					bh.bot.Edit(msg, fmt.Sprintf("Task %d: Downloading...\nFile: %s\nProgress: %d%%\nSpeed: %s\nETA: %s\nElapsed: %s", 
+						taskID, doc.FileName, progress, humanSpeed, eta, elapsed))
 					lastUpdate = time.Now()
 				}
 			})
@@ -185,9 +200,9 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			}
 		}
 
-		database.UpdateTaskDownloadProgress(taskID, 100)
+		database.UpdateTaskDownloadProgress(taskID, 100, 0)
 		database.UpdateTaskStatus(taskID, "Uploading", "")
-		bh.bot.Edit(msg, fmt.Sprintf("Task %d: Starting Upload to Google Drive.", taskID))
+		bh.bot.Edit(msg, fmt.Sprintf("Task %d: Starting Upload to Google Drive...\nFile: %s", taskID, doc.FileName))
 
 		// 2. Upload to Google Drive
 		token := &oauth2.Token{
@@ -205,11 +220,25 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 		}
 
 		lastUpdate := time.Now()
-		driveLink, err := uploaderInstance.UploadFile(downloadPath, func(uploaded, total int64) {
+		startTime := time.Now()
+		driveLink, err := uploaderInstance.UploadFile(downloadPath, func(uploaded, total, speed int64) {
 			if time.Since(lastUpdate) > 2*time.Second {
 				progress := int((float64(uploaded) / float64(total)) * 100)
-				database.UpdateTaskUploadProgress(taskID, progress)
-				bh.bot.Edit(msg, fmt.Sprintf("Task %d: Uploading to Drive %d%%", taskID, progress))
+				database.UpdateTaskUploadProgress(taskID, progress, speed)
+				
+				var eta string
+				if speed > 0 {
+					secondsLeft := (total - uploaded) / speed
+					eta = (time.Duration(secondsLeft) * time.Second).String()
+				} else {
+					eta = "calculating..."
+				}
+				
+				elapsed := time.Since(startTime).Round(time.Second).String()
+				humanSpeed := humanize.Bytes(uint64(speed)) + "/s"
+				
+				bh.bot.Edit(msg, fmt.Sprintf("Task %d: Uploading to Drive...\nFile: %s\nProgress: %d%%\nSpeed: %s\nETA: %s\nElapsed: %s", 
+					taskID, doc.FileName, progress, humanSpeed, eta, elapsed))
 				lastUpdate = time.Now()
 			}
 		})
@@ -220,9 +249,9 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			return
 		}
 
-		database.UpdateTaskUploadProgress(taskID, 100)
+		database.UpdateTaskUploadProgress(taskID, 100, 0)
 		database.UpdateTaskStatus(taskID, "Completed", driveLink)
-		bh.bot.Edit(msg, fmt.Sprintf("Task %d Completed!\nGoogle Drive Link: %s", taskID, driveLink))
+		bh.bot.Edit(msg, fmt.Sprintf("Task %d Completed!\nFile: %s\nGoogle Drive Link: %s", taskID, doc.FileName, driveLink))
 	}()
 
 	return nil

@@ -83,14 +83,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 data.forEach((t, i) => {
                     // Combine progress into one bar based on status
                     let progress = 0;
-                    if (t.status === 'Downloading') progress = t.download_progress;
-                    if (t.status === 'Uploading') progress = t.upload_progress;
+                    let speed = 0;
+                    if (t.status === 'Downloading') {
+                        progress = t.download_progress;
+                        speed = t.download_speed;
+                    }
+                    if (t.status === 'Uploading') {
+                        progress = t.upload_progress;
+                        speed = t.upload_speed;
+                    }
                     if (t.status === 'Completed') progress = 100;
+
+                    let speedText = speed > 0 ? formatBytes(speed) + '/s' : '-';
+                    let etaText = '-';
+
+                    if (speed > 0 && progress < 100) {
+                        let bytesRemaining = (t.file_size * (100 - progress)) / 100;
+                        let secondsRemaining = Math.round(bytesRemaining / speed);
+
+                        if (secondsRemaining < 60) {
+                            etaText = secondsRemaining + 's';
+                        } else if (secondsRemaining < 3600) {
+                            etaText = Math.floor(secondsRemaining / 60) + 'm ' + (secondsRemaining % 60) + 's';
+                        } else {
+                            etaText = Math.floor(secondsRemaining / 3600) + 'h ' + Math.floor((secondsRemaining % 3600) / 60) + 'm';
+                        }
+                    }
 
                     const pBar = `
                         <div class="progress-bar">
                             <div class="progress-fill" style="width: ${progress}%"></div>
                             <span class="progress-text">${progress}%</span>
+                        </div>
+                        <div style="font-size: 0.70rem; color: var(--text-secondary); margin-top: 4px; display: flex; justify-content: space-between;">
+                            <span>Speed: ${speedText}</span>
+                            <span>ETA: ${etaText}</span>
                         </div>
                     `;
 
@@ -120,8 +147,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     allTasksHTML += `
                         <tr>
                             <td>#${t.id}</td>
-                            <td>${t.file_name}</td>
+                            <td>
+                                <div>${t.file_name}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-secondary);">${formatBytes(t.file_size)}</div>
+                            </td>
                             <td>${t.input_type}</td>
+                            <td>${pBar}</td>
                             <td>${renderTaskStatusBadge(t.status)}</td>
                             <td>${linkHtml}</td>
                         </tr>

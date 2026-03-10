@@ -58,6 +58,8 @@ func createTables() error {
 			input_type VARCHAR(50) NOT NULL,
 			download_progress INT DEFAULT 0,
 			upload_progress INT DEFAULT 0,
+			download_speed BIGINT DEFAULT 0,
+			upload_speed BIGINT DEFAULT 0,
 			status VARCHAR(50) NOT NULL,
 			drive_link TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -110,6 +112,9 @@ func createTables() error {
 	DB.Exec("ALTER TABLE settings ADD COLUMN telegram_api_endpoint VARCHAR(255) DEFAULT 'http://telegram-bot-api:8081'")
 	DB.Exec("ALTER TABLE settings ADD COLUMN telegram_api_id VARCHAR(255) DEFAULT ''")
 	DB.Exec("ALTER TABLE settings ADD COLUMN telegram_api_hash VARCHAR(255) DEFAULT ''")
+
+	DB.Exec("ALTER TABLE tasks ADD COLUMN download_speed BIGINT DEFAULT 0")
+	DB.Exec("ALTER TABLE tasks ADD COLUMN upload_speed BIGINT DEFAULT 0")
 
 	log.Println("Database tables verified/created successfully")
 	return nil
@@ -189,18 +194,18 @@ func UpdateTaskStatus(taskID int, status string, driveLink string) error {
 	return err
 }
 
-func UpdateTaskDownloadProgress(taskID int, progress int) error {
-	_, err := DB.Exec("UPDATE tasks SET download_progress = ? WHERE id = ?", progress, taskID)
+func UpdateTaskDownloadProgress(taskID int, progress int, speed int64) error {
+	_, err := DB.Exec("UPDATE tasks SET download_progress = ?, download_speed = ? WHERE id = ?", progress, speed, taskID)
 	return err
 }
 
-func UpdateTaskUploadProgress(taskID int, progress int) error {
-	_, err := DB.Exec("UPDATE tasks SET upload_progress = ? WHERE id = ?", progress, taskID)
+func UpdateTaskUploadProgress(taskID int, progress int, speed int64) error {
+	_, err := DB.Exec("UPDATE tasks SET upload_progress = ?, upload_speed = ? WHERE id = ?", progress, speed, taskID)
 	return err
 }
 
 func GetAllTasks() ([]Task, error) {
-	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, status, IFNULL(drive_link, '') as drive_link, created_at FROM tasks ORDER BY id DESC LIMIT 50")
+	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, download_speed, upload_speed, status, IFNULL(drive_link, '') as drive_link, created_at FROM tasks ORDER BY id DESC LIMIT 50")
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +214,7 @@ func GetAllTasks() ([]Task, error) {
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.Status, &t.DriveLink, &t.CreatedAt)
+		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.CreatedAt)
 		if err != nil {
 			return nil, err
 		}

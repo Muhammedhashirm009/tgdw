@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/drive/v3"
@@ -39,22 +40,32 @@ func NewDriveUploader(ctx context.Context, token *oauth2.Token, clientID, client
 	return &DriveUploader{client: srv}, nil
 }
 
-type UploadProgressCallback func(bytesUploaded int64, totalBytes int64)
+type UploadProgressCallback func(bytesUploaded int64, totalBytes int64, speedBytesPerSec int64)
 
 // Custom progress reader to track upload progress
 type progressReader struct {
 	io.Reader
-	total    int64
-	uploaded int64
-	callback UploadProgressCallback
+	total                  int64
+	uploaded               int64
+	lastReportedUploaded   int64
+	lastReportTime         time.Time
+	callback               UploadProgressCallback
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.Reader.Read(p)
 	pr.uploaded += int64(n)
-	if pr.callback != nil {
-		pr.callback(pr.uploaded, pr.total)
+	
+	now := time.Now()
+	elapsed := now.Sub(pr.lastReportTime)
+
+	if elapsed >= time.Second && pr.callback != nil {
+		speed := int64(float64(pr.uploaded-pr.lastReportedUploaded) / elapsed.Seconds())
+		pr.callback(pr.uploaded, pr.total, speed)
+		pr.lastReportTime = now
+		pr.lastReportedUploaded = pr.uploaded
 	}
+	
 	return n, err
 }
 
@@ -71,9 +82,10 @@ func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCall
 	}
 	
 	reader := &progressReader{
-		Reader:   file,
-		total:    stat.Size(),
-		callback: callback,
+		Reader:               file,
+		total:                stat.Size(),
+		lastReportTime:       time.Now(),
+		callback:             callback,
 	}
 
 	f := &drive.File{Name: filepath.Base(filePath)}
