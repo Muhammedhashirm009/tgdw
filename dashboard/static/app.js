@@ -142,7 +142,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     // Show all in the all-tasks view
-                    let linkHtml = t.drive_link ? `<a href="${t.drive_link}" target="_blank" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.75rem;">View in Drive</a>` : '-';
+                    let linkHtml = t.drive_link ? `<a href="${t.drive_link}" target="_blank" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.75rem;">Drive Link</a>` : '-';
+                    
+                    let actionsHtml = "";
+                    if (t.status === 'Downloading' || t.status === 'Uploading') {
+                        actionsHtml += `<button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.75rem;" onclick="cancelTask(${t.id})">Cancel</button>`;
+                    } else if (t.status === 'Completed' || t.status === 'Cancelled') {
+                        actionsHtml += `<span style="font-size: 0.75rem; color: var(--text-secondary);">${t.elapsed_time || ''}</span>`;
+                    }
 
                     allTasksHTML += `
                         <tr>
@@ -153,7 +160,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             </td>
                             <td>${t.input_type}</td>
                             <td>${pBar}</td>
-                            <td>${renderTaskStatusBadge(t.status)}</td>
+                            <td>
+                                <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
+                                    ${renderTaskStatusBadge(t.status)}
+                                    ${actionsHtml}
+                                </div>
+                            </td>
                             <td>${linkHtml}</td>
                         </tr>
                     `;
@@ -163,6 +175,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 allTasksBody.innerHTML = allTasksHTML;
             })
             .catch(console.error);
+    }
+
+    // Expose functionality to inline button onclicks
+    window.cancelTask = function(taskId) {
+        if (!confirm("Are you sure you want to cancel Task #" + taskId + "?")) return;
+        
+        fetch('/api/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: taskId })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                alert("Task " + taskId + " cancelled successfully.");
+                fetchTasks(); // refresh table immediately
+                fetchStatus();
+            } else {
+                alert("Failed to cancel: " + (data.error || "Unknown error"));
+            }
+        })
+        .catch(err => alert("Network error trying to cancel task."));
     }
 
     // Settings Logic

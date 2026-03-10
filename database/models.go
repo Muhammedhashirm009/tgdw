@@ -24,6 +24,7 @@ type Task struct {
 	Status           string    `json:"status"`
 	DriveLink        string    `json:"drive_link"`
 	DriveFileID      string    `json:"drive_file_id"`
+	ElapsedTime      string    `json:"elapsed_time"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 

@@ -75,8 +75,18 @@ func (bh *BotHandler) handleTasks(c tele.Context) error {
 }
 
 func (bh *BotHandler) handleCancel(c tele.Context) error {
-	// TODO: Cancel a task by ID
-	return c.Send("Usage: /cancel <task_id>")
+	args := c.Args()
+	if len(args) == 0 {
+		return c.Send("Usage: /cancel <task_id>")
+	}
+	var taskID int
+	fmt.Sscanf(args[0], "%d", &taskID)
+	
+	if database.CancelTask(taskID) {
+		database.UpdateTaskStatus(taskID, "Cancelled", "", "", "")
+		return c.Send(fmt.Sprintf("Task %d successfully cancelled.", taskID))
+	}
+	return c.Send(fmt.Sprintf("Error: Task %d not found or already completed.", taskID))
 }
 
 func (bh *BotHandler) handleStatus(c tele.Context) error {
@@ -132,27 +142,33 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 		return err
 	}
 
-	bh.bot.Edit(msg, "Task queued. Starting download...")
-	database.UpdateTaskStatus(taskID, "Downloading", "", "")
+	bh.bot.Edit(msg, "<b>Task queued. Starting download...</b>", &tele.SendOptions{ParseMode: tele.ModeHTML})
+	database.UpdateTaskStatus(taskID, "Downloading", "", "", "")
+
+	// Create a cancelable context for this entire task
+	ctx, cancel := context.WithCancel(context.Background())
+	database.RegisterCancelFunc(taskID, cancel)
 
 	// Run in background
 	go func() {
+		defer cancel() // ensure memory is freed
 		defer func() {
 			if r := recover(); r != nil {
-				database.UpdateTaskStatus(taskID, "Failed", "", "")
-				bh.bot.Edit(msg, fmt.Sprintf("Task %d failed unexpectedly.", taskID))
+				database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+				bh.bot.Edit(msg, fmt.Sprintf("❌ <b>Task %d failed unexpectedly.</b>", taskID), &tele.SendOptions{ParseMode: tele.ModeHTML})
 			}
 		}()
 
 		// Get Telegram File Path
 		file, err := bh.bot.FileByID(doc.FileID)
 		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "", "")
-			bh.bot.Edit(msg, "Error getting file from Telegram: "+err.Error())
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			bh.bot.Edit(msg, "❌ <b>Error getting file from Telegram:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 			return
 		}
-		
+
 		var downloadPath string
+		startTime := time.Now()
 		
 		// If the file exists locally (from the local Telegram proxy), we don't need to HTTP download it
 		if stat, err := os.Stat(file.FilePath); err == nil && !stat.IsDir() {
@@ -168,10 +184,9 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			fileURL := fmt.Sprintf("%s/file/bot%s/%s", apiBase, settings.BotToken, file.FilePath)
 
 			lastUpdate := time.Now()
-			startTime := time.Now()
 			
 			// 1. Download
-			downloadPath, err = downloader.DownloadHTTP(fileURL, settings.DownloadDirectory, doc.FileName, func(downloaded, total, speed int64) {
+			downloadPath, err = downloader.DownloadHTTP(ctx, fileURL, settings.DownloadDirectory, doc.FileName, func(downloaded, total, speed int64) {
 				if time.Since(lastUpdate) > 2*time.Second {
 					progress := int((float64(downloaded) / float64(total)) * 100)
 					database.UpdateTaskDownloadProgress(taskID, progress, speed)
@@ -187,22 +202,34 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 					elapsed := time.Since(startTime).Round(time.Second).String()
 					humanSpeed := humanize.Bytes(uint64(speed)) + "/s"
 					
-					bh.bot.Edit(msg, fmt.Sprintf("Task %d: Downloading...\nFile: %s\nProgress: %d%%\nSpeed: %s\nETA: %s\nElapsed: %s", 
-						taskID, doc.FileName, progress, humanSpeed, eta, elapsed))
+					text := fmt.Sprintf("📥 <b>Downloading File [%d]</b>\n\n"+
+						"📄 <b>Name:</b> <code>%s</code>\n"+
+						"📊 <b>Progress:</b> %d%%\n"+
+						"🚀 <b>Speed:</b> %s\n"+
+						"⏳ <b>ETA:</b> %s\n"+
+						"⏱️ <b>Elapsed:</b> %s\n\n"+
+						"<i>Use /cancel %d to abort</i>",
+						taskID, doc.FileName, progress, humanSpeed, eta, elapsed, taskID)
+
+					bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
 					lastUpdate = time.Now()
 				}
 			})
 
 			if err != nil {
-				database.UpdateTaskStatus(taskID, "Failed", "", "")
-				bh.bot.Edit(msg, "Download Failed: "+err.Error())
+				// Prevent overwriting a manual "Cancelled" state by the context error
+				if ctx.Err() == context.Canceled {
+					return
+				}
+				database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+				bh.bot.Edit(msg, "❌ <b>Download Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 				return
 			}
 		}
 
 		database.UpdateTaskDownloadProgress(taskID, 100, 0)
-		database.UpdateTaskStatus(taskID, "Uploading", "", "")
-		bh.bot.Edit(msg, fmt.Sprintf("Task %d: Starting Upload to Google Drive...\nFile: %s", taskID, doc.FileName))
+		database.UpdateTaskStatus(taskID, "Uploading", "", "", "")
+		bh.bot.Edit(msg, fmt.Sprintf("☁️ <b>Task %d: Starting Upload to Google Drive...</b>\n📄 <b>File:</b> <code>%s</code>", taskID, doc.FileName), &tele.SendOptions{ParseMode: tele.ModeHTML})
 
 		// 2. Upload to Google Drive
 		token := &oauth2.Token{
@@ -214,14 +241,13 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 
 		uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
 		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "", "")
-			bh.bot.Edit(msg, "Upload Failed Setup: "+err.Error())
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			bh.bot.Edit(msg, "❌ <b>Upload Failed Setup:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 			return
 		}
 
 		lastUpdate := time.Now()
-		startTime := time.Now()
-		driveLink, driveFileID, err := uploaderInstance.UploadFile(downloadPath, func(uploaded, total, speed int64) {
+		driveLink, driveFileID, err := uploaderInstance.UploadFile(ctx, downloadPath, func(uploaded, total, speed int64) {
 			if time.Since(lastUpdate) > 2*time.Second {
 				progress := int((float64(uploaded) / float64(total)) * 100)
 				database.UpdateTaskUploadProgress(taskID, progress, speed)
@@ -237,21 +263,40 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 				elapsed := time.Since(startTime).Round(time.Second).String()
 				humanSpeed := humanize.Bytes(uint64(speed)) + "/s"
 				
-				bh.bot.Edit(msg, fmt.Sprintf("Task %d: Uploading to Drive...\nFile: %s\nProgress: %d%%\nSpeed: %s\nETA: %s\nElapsed: %s", 
-					taskID, doc.FileName, progress, humanSpeed, eta, elapsed))
+				text := fmt.Sprintf("☁️ <b>Uploading File [%d]</b>\n\n"+
+					"📄 <b>Name:</b> <code>%s</code>\n"+
+					"📊 <b>Progress:</b> %d%%\n"+
+					"🚀 <b>Speed:</b> %s\n"+
+					"⏳ <b>ETA:</b> %s\n"+
+					"⏱️ <b>Elapsed:</b> %s\n\n"+
+					"<i>Use /cancel %d to abort</i>",
+					taskID, doc.FileName, progress, humanSpeed, eta, elapsed, taskID)
+
+				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
 				lastUpdate = time.Now()
 			}
 		})
 
 		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "", "")
-			bh.bot.Edit(msg, "Upload Failed: "+err.Error())
+			if ctx.Err() == context.Canceled {
+				return
+			}
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			bh.bot.Edit(msg, "❌ <b>Upload Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 			return
 		}
 
+		finalElapsed := time.Since(startTime).Round(time.Second).String()
 		database.UpdateTaskUploadProgress(taskID, 100, 0)
-		database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID)
-		bh.bot.Edit(msg, fmt.Sprintf("Task %d Completed!\nFile: %s\nGoogle Drive Link: %s", taskID, doc.FileName, driveLink))
+		database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
+
+		finalText := fmt.Sprintf("✅ <b>Task %d Completed!</b>\n\n"+
+			"📄 <b>File:</b> <code>%s</code>\n"+
+			"⏱️ <b>Total Time:</b> %s\n\n"+
+			"🔗 <a href=\"%s\">Open in Google Drive</a>",
+			taskID, doc.FileName, finalElapsed, driveLink)
+
+		bh.bot.Edit(msg, finalText, &tele.SendOptions{ParseMode: tele.ModeHTML})
 	}()
 
 	return nil

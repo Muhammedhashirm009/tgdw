@@ -68,7 +68,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCallback) (string, string, error) {
+func (du *DriveUploader) UploadFile(ctx context.Context, filePath string, callback UploadProgressCallback) (string, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", "", err
@@ -88,7 +88,7 @@ func (du *DriveUploader) UploadFile(filePath string, callback UploadProgressCall
 	}
 
 	f := &drive.File{Name: filepath.Base(filePath)}
-	res, err := du.client.Files.Create(f).Media(reader).Do()
+	res, err := du.client.Files.Create(f).Media(reader).Context(ctx).Do()
 	if err != nil {
 		return "", "", err
 	}

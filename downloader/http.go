@@ -13,8 +13,12 @@ import (
 type ProgressCallback func(bytesDownloaded int64, totalBytes int64, speedBytesPerSec int64)
 
 // DownloadHTTP downloads a file from a URL to a specified directory
-func DownloadHTTP(url string, destDir string, filename string, callback ProgressCallback) (string, error) {
-	resp, err := http.Get(url)
+func DownloadHTTP(ctx context.Context, url string, destDir string, filename string, callback ProgressCallback) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -25,6 +25,7 @@ func (s *Server) Start() error {
 	// API routes
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
+	mux.HandleFunc("/api/cancel", s.handleTaskCancel)
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/auth/google/login", s.handleGoogleLogin)
@@ -65,6 +66,31 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	json.NewEncoder(w).Encode(tasks)
+}
+
+func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse JSON body like {"id": 123}
+	var req struct {
+		ID int `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+
+	cancelled := database.CancelTask(req.ID)
+	if cancelled {
+		database.UpdateTaskStatus(req.ID, "Cancelled", "", "", "")
+		w.Write([]byte(`{"success": true}`))
+	} else {
+		w.Write([]byte(`{"success": false, "error": "Task not found or not active"}`))
+	}
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
