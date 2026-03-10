@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/downloader/telegram-cloud-transfer/database"
@@ -144,34 +145,43 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			return
 		}
 		
-		// Construct download URL using custom API endpoint
-		apiBase := settings.TelegramAPIEndpoint
-		if apiBase == "" {
-			apiBase = "https://api.telegram.org"
-		}
-		fileURL := fmt.Sprintf("%s/file/bot%s/%s", apiBase, settings.BotToken, file.FilePath)
-
-		lastUpdate := time.Now()
+		var downloadPath string
 		
-		// 1. Download
-		downloadPath, err := downloader.DownloadHTTP(fileURL, settings.DownloadDirectory, doc.FileName, func(downloaded, total int64) {
-			if time.Since(lastUpdate) > 2*time.Second {
-				progress := int((float64(downloaded) / float64(total)) * 100)
-				database.UpdateTaskDownloadProgress(taskID, progress)
-				bh.bot.Edit(msg, fmt.Sprintf("Task %d: Downloading %d%%", taskID, progress))
-				lastUpdate = time.Now()
+		// If the file exists locally (from the local Telegram proxy), we don't need to HTTP download it
+		if stat, err := os.Stat(file.FilePath); err == nil && !stat.IsDir() {
+			downloadPath = file.FilePath
+			database.UpdateTaskDownloadProgress(taskID, 100)
+			bh.bot.Edit(msg, fmt.Sprintf("Task %d: File accessed locally. Skipping HTTP download.", taskID))
+		} else {
+			// Construct download URL using custom API endpoint
+			apiBase := settings.TelegramAPIEndpoint
+			if apiBase == "" {
+				apiBase = "https://api.telegram.org"
 			}
-		})
+			fileURL := fmt.Sprintf("%s/file/bot%s/%s", apiBase, settings.BotToken, file.FilePath)
 
-		if err != nil {
-			database.UpdateTaskStatus(taskID, "Failed", "")
-			bh.bot.Edit(msg, "Download Failed: "+err.Error())
-			return
+			lastUpdate := time.Now()
+			
+			// 1. Download
+			downloadPath, err = downloader.DownloadHTTP(fileURL, settings.DownloadDirectory, doc.FileName, func(downloaded, total int64) {
+				if time.Since(lastUpdate) > 2*time.Second {
+					progress := int((float64(downloaded) / float64(total)) * 100)
+					database.UpdateTaskDownloadProgress(taskID, progress)
+					bh.bot.Edit(msg, fmt.Sprintf("Task %d: Downloading %d%%", taskID, progress))
+					lastUpdate = time.Now()
+				}
+			})
+
+			if err != nil {
+				database.UpdateTaskStatus(taskID, "Failed", "")
+				bh.bot.Edit(msg, "Download Failed: "+err.Error())
+				return
+			}
 		}
 
 		database.UpdateTaskDownloadProgress(taskID, 100)
 		database.UpdateTaskStatus(taskID, "Uploading", "")
-		bh.bot.Edit(msg, fmt.Sprintf("Task %d: Download complete. Starting Upload to Google Drive.", taskID))
+		bh.bot.Edit(msg, fmt.Sprintf("Task %d: Starting Upload to Google Drive.", taskID))
 
 		// 2. Upload to Google Drive
 		token := &oauth2.Token{

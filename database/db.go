@@ -25,9 +25,10 @@ func InitDB() error {
 	}
 
 	// Connection Pool Settings to prevent "connection reset by peer"
-	db.SetConnMaxLifetime(time.Minute * 3)
+	db.SetConnMaxLifetime(45 * time.Second)
+	db.SetConnMaxIdleTime(45 * time.Second)
 	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(10)
+	db.SetMaxIdleConns(5)
 
 	if err := db.Ping(); err != nil {
 		return err
