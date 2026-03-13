@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,7 +117,10 @@ func createTables() error {
 			telegram_api_hash VARCHAR(255) DEFAULT '',
 			access_token TEXT,
 			refresh_token TEXT,
-			token_expiry TIMESTAMP NULL
+			token_expiry TIMESTAMP NULL,
+			retention_hours INT DEFAULT 48,
+			admin_telegram_ids TEXT,
+			max_file_size_normal BIGINT DEFAULT 4294967296
 		)`,
 		`CREATE TABLE IF NOT EXISTS logs (
 			id INT AUTO_INCREMENT PRIMARY KEY,
@@ -139,11 +144,15 @@ func createTables() error {
 	DB.Exec("ALTER TABLE settings ADD COLUMN telegram_api_endpoint VARCHAR(255) DEFAULT 'http://telegram-bot-api:8081'")
 	DB.Exec("ALTER TABLE settings ADD COLUMN telegram_api_id VARCHAR(255) DEFAULT ''")
 	DB.Exec("ALTER TABLE settings ADD COLUMN telegram_api_hash VARCHAR(255) DEFAULT ''")
+	DB.Exec("ALTER TABLE settings ADD COLUMN retention_hours INT DEFAULT 48")
+	DB.Exec("ALTER TABLE settings ADD COLUMN admin_telegram_ids TEXT")
+	DB.Exec("ALTER TABLE settings ADD COLUMN max_file_size_normal BIGINT DEFAULT 4294967296")
 
 	DB.Exec("ALTER TABLE tasks ADD COLUMN download_speed BIGINT DEFAULT 0")
 	DB.Exec("ALTER TABLE tasks ADD COLUMN upload_speed BIGINT DEFAULT 0")
 	DB.Exec("ALTER TABLE tasks ADD COLUMN drive_file_id VARCHAR(255) DEFAULT ''")
 	DB.Exec("ALTER TABLE tasks ADD COLUMN elapsed_time VARCHAR(50) DEFAULT ''")
+	DB.Exec("ALTER TABLE tasks ADD COLUMN telegram_user_id BIGINT DEFAULT 0")
 
 	log.Println("Database tables verified/created successfully")
 	return EnsureAdminUser()
@@ -183,11 +192,12 @@ func VerifyUser(username, password string) bool {
 func GetSettings() (Settings, error) {
 	var s Settings
 	var expiry sql.NullTime
-	var access, refresh sql.NullString
+	var access, refresh, adminIDs sql.NullString
+	var maxNormal sql.NullInt64
 
 	// Fetch the first settings row
-	err := DB.QueryRow("SELECT id, IFNULL(bot_token, ''), IFNULL(google_client_id, ''), IFNULL(google_client_secret, ''), download_directory, max_file_size, concurrent_tasks, IFNULL(telegram_api_endpoint, 'http://telegram-bot-api:8081'), IFNULL(telegram_api_id, ''), IFNULL(telegram_api_hash, ''), access_token, refresh_token, token_expiry FROM settings ORDER BY id ASC LIMIT 1").Scan(
-		&s.ID, &s.BotToken, &s.GoogleClientID, &s.GoogleClientSecret, &s.DownloadDirectory, &s.MaxFileSize, &s.ConcurrentTasks, &s.TelegramAPIEndpoint, &s.TelegramAPIID, &s.TelegramAPIHash, &access, &refresh, &expiry,
+	err := DB.QueryRow("SELECT id, IFNULL(bot_token, ''), IFNULL(google_client_id, ''), IFNULL(google_client_secret, ''), download_directory, max_file_size, concurrent_tasks, IFNULL(telegram_api_endpoint, 'http://telegram-bot-api:8081'), IFNULL(telegram_api_id, ''), IFNULL(telegram_api_hash, ''), access_token, refresh_token, token_expiry, IFNULL(retention_hours, 48), admin_telegram_ids, max_file_size_normal FROM settings ORDER BY id ASC LIMIT 1").Scan(
+		&s.ID, &s.BotToken, &s.GoogleClientID, &s.GoogleClientSecret, &s.DownloadDirectory, &s.MaxFileSize, &s.ConcurrentTasks, &s.TelegramAPIEndpoint, &s.TelegramAPIID, &s.TelegramAPIHash, &access, &refresh, &expiry, &s.RetentionHours, &adminIDs, &maxNormal,
 	)
 	
 	if access.Valid {
@@ -199,10 +209,18 @@ func GetSettings() (Settings, error) {
 	if expiry.Valid {
 		s.TokenExpiry = expiry.Time
 	}
+	if adminIDs.Valid {
+		s.AdminTelegramIDs = adminIDs.String
+	}
+	if maxNormal.Valid {
+		s.MaxFileSizeNormal = maxNormal.Int64
+	} else {
+		s.MaxFileSizeNormal = 4294967296 // 4GB default
+	}
 
 	if err == sql.ErrNoRows {
 		// Insert default row
-		_, err = DB.Exec("INSERT INTO settings (bot_token, google_client_id, google_client_secret, download_directory, max_file_size, concurrent_tasks, telegram_api_endpoint, telegram_api_id, telegram_api_hash) VALUES ('', '', '', '/data/downloads', 0, 3, 'http://telegram-bot-api:8081', '', '')")
+		_, err = DB.Exec("INSERT INTO settings (bot_token, google_client_id, google_client_secret, download_directory, max_file_size, concurrent_tasks, telegram_api_endpoint, telegram_api_id, telegram_api_hash, retention_hours, admin_telegram_ids, max_file_size_normal) VALUES ('', '', '', '/data/downloads', 0, 3, 'http://telegram-bot-api:8081', '', '', 48, '', 4294967296)")
 		if err != nil {
 			return s, err
 		}
@@ -216,9 +234,9 @@ func GetSettings() (Settings, error) {
 func UpdateSettings(s Settings) error {
 	_, err := DB.Exec(`
 		UPDATE settings 
-		SET bot_token = ?, google_client_id = ?, google_client_secret = ?, download_directory = ?, max_file_size = ?, concurrent_tasks = ?, telegram_api_endpoint = ?, telegram_api_id = ?, telegram_api_hash = ?
+		SET bot_token = ?, google_client_id = ?, google_client_secret = ?, download_directory = ?, max_file_size = ?, concurrent_tasks = ?, telegram_api_endpoint = ?, telegram_api_id = ?, telegram_api_hash = ?, retention_hours = ?, admin_telegram_ids = ?, max_file_size_normal = ?
 		WHERE id = ?`,
-		s.BotToken, s.GoogleClientID, s.GoogleClientSecret, s.DownloadDirectory, s.MaxFileSize, s.ConcurrentTasks, s.TelegramAPIEndpoint, s.TelegramAPIID, s.TelegramAPIHash, s.ID,
+		s.BotToken, s.GoogleClientID, s.GoogleClientSecret, s.DownloadDirectory, s.MaxFileSize, s.ConcurrentTasks, s.TelegramAPIEndpoint, s.TelegramAPIID, s.TelegramAPIHash, s.RetentionHours, s.AdminTelegramIDs, s.MaxFileSizeNormal, s.ID,
 	)
 	return err
 }
@@ -234,17 +252,63 @@ func UpdateOAuthTokens(id int, accessToken, refreshToken string, expiry time.Tim
 }
 
 func CreateTask(userID int, fileName string, fileSize int64, inputType string) (int, error) {
+	return CreateTaskWithTelegram(userID, 0, fileName, fileSize, inputType)
+}
 
+func CreateTaskWithTelegram(userID int, telegramUserID int64, fileName string, fileSize int64, inputType string) (int, error) {
 	res, err := DB.Exec(`
-		INSERT INTO tasks (user_id, file_name, file_size, input_type, status) 
-		VALUES (?, ?, ?, ?, 'Pending')`,
-		userID, fileName, fileSize, inputType,
+		INSERT INTO tasks (user_id, file_name, file_size, input_type, status, telegram_user_id) 
+		VALUES (?, ?, ?, ?, 'Pending', ?)`,
+		userID, fileName, fileSize, inputType, telegramUserID,
 	)
 	if err != nil {
 		return 0, err
 	}
 	id, err := res.LastInsertId()
 	return int(id), err
+}
+
+// GetDailyTaskCount returns how many tasks a Telegram user has created today
+func GetDailyTaskCount(telegramUserID int64) (int, error) {
+	var count int
+	err := DB.QueryRow("SELECT COUNT(*) FROM tasks WHERE telegram_user_id = ? AND DATE(created_at) = CURDATE()", telegramUserID).Scan(&count)
+	return count, err
+}
+
+// IsAdminTelegram checks if a Telegram user ID is in the admin list
+func IsAdminTelegram(telegramUserID int64) bool {
+	settings, err := GetSettings()
+	if err != nil || settings.AdminTelegramIDs == "" {
+		return false
+	}
+	userIDStr := strconv.FormatInt(telegramUserID, 10)
+	for _, idStr := range strings.Split(settings.AdminTelegramIDs, ",") {
+		if strings.TrimSpace(idStr) == userIDStr {
+			return true
+		}
+	}
+	return false
+}
+
+// GetTasksByTelegramUser returns recent tasks for a specific Telegram user
+func GetTasksByTelegramUser(telegramUserID int64, limit int) ([]Task, error) {
+	rows, err := DB.Query("SELECT id, user_id, IFNULL(telegram_user_id, 0), file_name, IFNULL(file_size, 0), input_type, IFNULL(download_progress, 0), IFNULL(upload_progress, 0), IFNULL(download_speed, 0), IFNULL(upload_speed, 0), status, IFNULL(drive_link, ''), IFNULL(drive_file_id, ''), IFNULL(elapsed_time, ''), created_at FROM tasks WHERE telegram_user_id = ? ORDER BY id DESC LIMIT ?", telegramUserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		err := rows.Scan(&t.ID, &t.UserID, &t.TelegramUserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.DriveFileID, &t.ElapsedTime, &t.CreatedAt)
+		if err != nil {
+			log.Printf("Error scanning task: %v", err)
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
 }
 
 func UpdateTaskStatus(taskID int, status string, driveLink string, driveFileID string, elapsedTime string) error {
@@ -263,7 +327,7 @@ func UpdateTaskUploadProgress(taskID int, progress int, speed int64) error {
 }
 
 func GetAllTasks() ([]Task, error) {
-	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, download_speed, upload_speed, status, IFNULL(drive_link, '') as drive_link, IFNULL(drive_file_id, '') as drive_file_id, IFNULL(elapsed_time, '') as elapsed_time, created_at FROM tasks ORDER BY id DESC LIMIT 50")
+	rows, err := DB.Query("SELECT id, user_id, file_name, IFNULL(file_size, 0), input_type, IFNULL(download_progress, 0), IFNULL(upload_progress, 0), IFNULL(download_speed, 0), IFNULL(upload_speed, 0), status, IFNULL(drive_link, ''), IFNULL(drive_file_id, ''), IFNULL(elapsed_time, ''), created_at FROM tasks ORDER BY id DESC LIMIT 50")
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +338,8 @@ func GetAllTasks() ([]Task, error) {
 		var t Task
 		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.DriveFileID, &t.ElapsedTime, &t.CreatedAt)
 		if err != nil {
-			return nil, err
+			log.Printf("Error scanning task in GetAllTasks: %v", err)
+			continue
 		}
 		tasks = append(tasks, t)
 	}
@@ -292,7 +357,7 @@ func GetStatusSummary() (int, int, error) {
 }
 
 func GetExpiredTasks(hours int) ([]Task, error) {
-	rows, err := DB.Query("SELECT id, user_id, file_name, file_size, input_type, download_progress, upload_progress, download_speed, upload_speed, status, IFNULL(drive_link, '') as drive_link, IFNULL(drive_file_id, '') as drive_file_id, IFNULL(elapsed_time, '') as elapsed_time, created_at FROM tasks WHERE status = 'Completed' AND drive_file_id != '' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR)", hours)
+	rows, err := DB.Query("SELECT id, user_id, file_name, IFNULL(file_size, 0), input_type, IFNULL(download_progress, 0), IFNULL(upload_progress, 0), IFNULL(download_speed, 0), IFNULL(upload_speed, 0), status, IFNULL(drive_link, ''), IFNULL(drive_file_id, ''), IFNULL(elapsed_time, ''), created_at FROM tasks WHERE status = 'Completed' AND IFNULL(drive_file_id, '') != '' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR)", hours)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +368,7 @@ func GetExpiredTasks(hours int) ([]Task, error) {
 		var t Task
 		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.DriveFileID, &t.ElapsedTime, &t.CreatedAt)
 		if err != nil {
+			log.Printf("Error scanning task in GetExpiredTasks: %v", err)
 			continue
 		}
 		tasks = append(tasks, t)

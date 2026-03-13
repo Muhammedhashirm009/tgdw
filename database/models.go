@@ -14,6 +14,7 @@ type User struct {
 type Task struct {
 	ID               int       `json:"id"`
 	UserID           int       `json:"user_id"`
+	TelegramUserID   int64     `json:"telegram_user_id"`
 	FileName         string    `json:"file_name"`
 	FileSize         int64     `json:"file_size"`
 	InputType        string    `json:"input_type"`
@@ -39,19 +40,22 @@ type Torrent struct {
 }
 
 type Settings struct {
-	ID                 int       `json:"id"`
-	BotToken           string    `json:"bot_token"`
-	GoogleClientID     string    `json:"google_client_id"`
-	GoogleClientSecret string    `json:"google_client_secret"`
-	DownloadDirectory  string    `json:"download_directory"`
-	MaxFileSize        int64     `json:"max_file_size"`
-	ConcurrentTasks    int       `json:"concurrent_tasks"`
-	TelegramAPIEndpoint string   `json:"telegram_api_endpoint"`
-	TelegramAPIID      string    `json:"telegram_api_id"`
-	TelegramAPIHash    string    `json:"telegram_api_hash"`
-	AccessToken        string    `json:"access_token"`
-	RefreshToken       string    `json:"refresh_token"`
-	TokenExpiry        time.Time `json:"token_expiry"`
+	ID                  int       `json:"id"`
+	BotToken            string    `json:"bot_token"`
+	GoogleClientID      string    `json:"google_client_id"`
+	GoogleClientSecret  string    `json:"google_client_secret"`
+	DownloadDirectory   string    `json:"download_directory"`
+	MaxFileSize         int64     `json:"max_file_size"`
+	ConcurrentTasks     int       `json:"concurrent_tasks"`
+	TelegramAPIEndpoint string    `json:"telegram_api_endpoint"`
+	TelegramAPIID       string    `json:"telegram_api_id"`
+	TelegramAPIHash     string    `json:"telegram_api_hash"`
+	AccessToken         string    `json:"access_token"`
+	RefreshToken        string    `json:"refresh_token"`
+	TokenExpiry         time.Time `json:"token_expiry"`
+	RetentionHours      int       `json:"retention_hours"`
+	AdminTelegramIDs    string    `json:"admin_telegram_ids"`
+	MaxFileSizeNormal   int64     `json:"max_file_size_normal"`
 }
 
 type Log struct {

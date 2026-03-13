@@ -55,47 +55,51 @@ func main() {
 		}
 	}()
 	
-	// Garbage Collector for Auto-Deleting files older than 48 hours
+	// Garbage Collector for Auto-Deleting files older than the configured retention period
 	go func() {
 		for {
-			time.Sleep(1 * time.Hour) // Run every hour
-			
 			settings, err := database.GetSettings()
-			if err != nil || settings.AccessToken == "" {
-				continue
-			}
+			if err == nil && settings.AccessToken != "" {
+				retentionHours := settings.RetentionHours
+				if retentionHours <= 0 {
+					retentionHours = 48 // fallback default
+				}
 
-			expiredTasks, err := database.GetExpiredTasks(48)
-			if err != nil || len(expiredTasks) == 0 {
-				continue
-			}
+				expiredTasks, err := database.GetExpiredTasks(retentionHours)
+				if err == nil && len(expiredTasks) > 0 {
+					log.Printf("Garbage Collector found %d tasks older than %d hours", len(expiredTasks), retentionHours)
 
-			log.Printf("Garbage Collector found %d tasks older than 48 hours", len(expiredTasks))
+					token := &oauth2.Token{
+						AccessToken:  settings.AccessToken,
+						RefreshToken: settings.RefreshToken,
+						Expiry:       settings.TokenExpiry,
+						TokenType:    "Bearer",
+					}
 
-			token := &oauth2.Token{
-				AccessToken:  settings.AccessToken,
-				RefreshToken: settings.RefreshToken,
-				Expiry:       settings.TokenExpiry,
-				TokenType:    "Bearer",
-			}
-
-			uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
-			if err != nil {
-				continue
-			}
-
-			for _, task := range expiredTasks {
-				log.Printf("Auto-deleting Google Drive file for Task %d (DriveFileID: %s)", task.ID, task.DriveFileID)
-				err := uploaderInstance.DeleteFile(task.DriveFileID)
-				if err != nil {
-					log.Printf("Failed to delete file from Drive for Task %d: %v", task.ID, err)
-				} else {
-					database.DB.Exec("DELETE FROM tasks WHERE id = ?", task.ID)
-					log.Printf("Successfully deleted and purged Task %d", task.ID)
+					uploaderInstance, uploaderErr := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
+					if uploaderErr == nil {
+						for _, task := range expiredTasks {
+							log.Printf("Auto-deleting Google Drive file for Task %d (DriveFileID: %s)", task.ID, task.DriveFileID)
+							err := uploaderInstance.DeleteFile(task.DriveFileID)
+							if err != nil {
+								log.Printf("Failed to delete file from Drive for Task %d: %v. Keeping DB record for retry.", task.ID, err)
+								continue // Keep the DB row so GC retries next cycle
+							}
+							log.Printf("Successfully deleted file from Drive for Task %d", task.ID)
+							_, dbErr := database.DB.Exec("DELETE FROM tasks WHERE id = ?", task.ID)
+							if dbErr != nil {
+								log.Printf("Failed to delete task %d from database: %v", task.ID, dbErr)
+							}
+						}
+					} else {
+						log.Printf("Garbage Collector: failed to create Drive uploader: %v", uploaderErr)
+					}
 				}
 			}
+			time.Sleep(1 * time.Hour) // Run every hour
 		}
 	}()
+
 	
 	// Block forever
 	select {}
