@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -275,17 +276,283 @@ func (bh *BotHandler) handleMeCallback(c tele.Context) error {
 // ===== Text Handler =====
 
 func (bh *BotHandler) handleText(c tele.Context) error {
-	text := c.Text()
+	text := strings.TrimSpace(c.Text())
 	if text == "" {
 		return nil
 	}
 
-	msg, err := bh.bot.Send(c.Chat(), "⏳ Parsing input...\n\n"+text)
+	if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") {
+		return bh.handleDirectLink(c, text)
+	}
+
+	return c.Send("Send me a document or a direct HTTP/HTTPS link to download and upload it to Google Drive.", &tele.SendOptions{ParseMode: tele.ModeHTML})
+}
+
+func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error {
+	telegramUserID := c.Sender().ID
+	isAdmin := database.IsAdminTelegram(telegramUserID)
+
+	// Fetch Settings
+	settings, err := database.GetSettings()
+	if err != nil {
+		return c.Send("❌ Internal error: Could not load settings.")
+	}
+
+	if settings.AccessToken == "" {
+		return c.Send("⚠️ Google Drive is not connected.\nPlease connect via the Dashboard.")
+	}
+
+	msg, err := bh.bot.Send(c.Chat(), "⏳ Fetching link info...")
 	if err != nil {
 		return err
 	}
 
-	bh.bot.Edit(msg, "📌 Added to queue.\n\n<i>Note: Direct URL and magnet link downloads are coming soon.</i>", &tele.SendOptions{ParseMode: tele.ModeHTML})
+	// Fetch Headers to get size and name
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("HEAD", downloadURL, nil)
+	if err != nil {
+		bh.bot.Edit(msg, "❌ Invalid URL configuration.")
+		return err
+	}
+
+	// Disguise as a standard browser to avoid some basic blocks
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	resp, err := client.Do(req)
+	
+	if err != nil || resp.StatusCode >= 400 {
+		// Fallback to GET if HEAD fails or is rejected
+		req, _ = http.NewRequest("GET", downloadURL, nil)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+		
+		// Create a context to cancel the GET request immediately after getting headers
+		cancelCtx, cancelFunc := context.WithCancel(context.Background())
+		req = req.WithContext(cancelCtx)
+		
+		resp, err = client.Do(req)
+		cancelFunc() // abort body download
+		
+		if err != nil || resp.StatusCode >= 400 {
+			bh.bot.Edit(msg, "❌ Could not reach the file. Ensure the link points directly to a downloadable file.")
+			return err
+		}
+	}
+
+	fileSize := resp.ContentLength
+	if fileSize < 0 {
+		fileSize = 0 // Unknown size
+	}
+
+	// Try extracting filename from Content-Disposition
+	fileName := ""
+	cd := resp.Header.Get("Content-Disposition")
+	if cd != "" {
+		// Basic parsing for filename="..."
+		if idx := strings.Index(cd, "filename="); idx != -1 {
+			fileName = cd[idx+len("filename="):]
+			fileName = strings.Trim(fileName, `"' `)
+			// Remove any trailing parameters separated by semicolon
+			if semi := strings.Index(fileName, ";"); semi != -1 {
+				fileName = fileName[:semi]
+			}
+		}
+	}
+	
+	// Fallback to URL path base
+	if fileName == "" {
+		fileName = path.Base(req.URL.Path)
+		if fileName == "/" || fileName == "." || fileName == "" {
+			fileName = fmt.Sprintf("download_%d", time.Now().Unix())
+		}
+	}
+
+	// --- Role-based limits ---
+	if !isAdmin {
+		// Check daily limit
+		dailyCount, _ := database.GetDailyTaskCount(telegramUserID)
+		if dailyCount >= maxDailyTasksNormal {
+			bh.bot.Edit(msg, fmt.Sprintf("🚫 <b>Daily limit reached!</b>\n\n"+
+				"You've used <b>%d/%d</b> downloads today.\n"+
+				"Try again tomorrow or contact an admin.",
+				dailyCount, maxDailyTasksNormal), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			return nil
+		}
+
+		// Check file size limit
+		maxSize := settings.MaxFileSizeNormal
+		if maxSize <= 0 {
+			maxSize = 4294967296 // 4GB default
+		}
+		if fileSize > maxSize {
+			bh.bot.Edit(msg, fmt.Sprintf("🚫 <b>File too large!</b>\n\n"+
+				"📦 <b>File size:</b> %s\n"+
+				"📏 <b>Max allowed:</b> %s\n\n"+
+				"Contact an admin for larger files.",
+				formatSize(fileSize), formatSize(maxSize)), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			return nil
+		}
+	}
+
+	bh.bot.Edit(msg, fmt.Sprintf("🔗 <b>Direct Link Received</b>\n\n"+
+		"📄 <b>Name:</b> <code>%s</code>\n"+
+		"📦 <b>Size:</b> %s\n"+
+		"⏳ <b>Status:</b> Queued...",
+		fileName, formatSize(fileSize)), &tele.SendOptions{ParseMode: tele.ModeHTML})
+
+	taskID, err := database.CreateTaskWithTelegram(1, telegramUserID, fileName, fileSize, "Direct Link")
+	if err != nil {
+		bh.bot.Edit(msg, "❌ Error creating task in database.")
+		return err
+	}
+
+	database.UpdateTaskStatus(taskID, "Downloading", "", "", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	database.RegisterCancelFunc(taskID, cancel)
+
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+				bh.bot.Edit(msg, fmt.Sprintf("❌ <b>Task #%d failed unexpectedly.</b>", taskID), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+		}()
+
+		var downloadPath string
+		startTime := time.Now()
+
+		// === DOWNLOAD PHASE ===
+		lastUpdate := time.Now()
+		downloadPath, err = downloader.DownloadHTTP(ctx, downloadURL, settings.DownloadDirectory, fileName, func(downloaded, total, speed int64) {
+			if time.Since(lastUpdate) > 3*time.Second {
+				progress := 0
+				if total > 0 {
+					progress = int((float64(downloaded) / float64(total)) * 100)
+				}
+				
+				database.UpdateTaskDownloadProgress(taskID, progress, speed)
+
+				eta := calcETA(total-downloaded, speed)
+				if total <= 0 {
+					eta = "unknown"
+				}
+				
+				elapsed := time.Since(startTime).Round(time.Second).String()
+
+				text := fmt.Sprintf("📥 <b>Downloading Web Link</b> [#%d]\n\n"+
+					"📄 <code>%s</code>\n"+
+					"<code>[%s] %d%%</code>\n\n"+
+					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+					"<i>/cancel %d to abort</i>",
+					taskID, fileName,
+					progressBar(progress), progress,
+					formatSize(speed), eta, elapsed, taskID)
+
+				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+				lastUpdate = time.Now()
+			}
+		})
+
+		if err != nil {
+			if ctx.Err() == context.Canceled {
+				return
+			}
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			bh.bot.Edit(msg, "❌ <b>Download Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			return
+		}
+
+		// Update actual file size if it was unknown
+		if fileSize <= 0 {
+			if stat, statErr := os.Stat(downloadPath); statErr == nil {
+				fileSize = stat.Size()
+				// Unfortunately updating DB schema for file_size after creation requires another func, 
+				// but progress is tracked at 100% now so it's okay.
+			}
+		}
+
+		// === UPLOAD PHASE ===
+		database.UpdateTaskDownloadProgress(taskID, 100, 0)
+		database.UpdateTaskStatus(taskID, "Uploading", "", "", "")
+
+		bh.bot.Edit(msg, fmt.Sprintf("☁️ <b>Uploading to Google Drive</b> [#%d]\n\n"+
+			"📄 <code>%s</code>\n"+
+			"<code>[%s] 0%%</code>\n\n"+
+			"⏳ Starting upload...",
+			taskID, fileName, progressBar(0)), &tele.SendOptions{ParseMode: tele.ModeHTML})
+
+		token := &oauth2.Token{
+			AccessToken:  settings.AccessToken,
+			RefreshToken: settings.RefreshToken,
+			Expiry:       settings.TokenExpiry,
+			TokenType:    "Bearer",
+		}
+
+		uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
+		if err != nil {
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			bh.bot.Edit(msg, "❌ <b>Upload Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			return
+		}
+
+		lastUpdate = time.Now()
+		driveLink, driveFileID, err := uploaderInstance.UploadFile(ctx, downloadPath, fileName, func(uploaded, total, speed int64) {
+			if time.Since(lastUpdate) > 3*time.Second {
+				progress := 0
+				if total > 0 {
+					progress = int((float64(uploaded) / float64(total)) * 100)
+				}
+				
+				database.UpdateTaskUploadProgress(taskID, progress, speed)
+
+				eta := calcETA(total-uploaded, speed)
+				elapsed := time.Since(startTime).Round(time.Second).String()
+
+				text := fmt.Sprintf("☁️ <b>Uploading</b> [#%d]\n\n"+
+					"📄 <code>%s</code>\n"+
+					"<code>[%s] %d%%</code>\n\n"+
+					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+					"<i>/cancel %d to abort</i>",
+					taskID, fileName,
+					progressBar(progress), progress,
+					formatSize(speed), eta, elapsed, taskID)
+
+				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+				lastUpdate = time.Now()
+			}
+		})
+
+		// Clean up the local file after upload
+		os.Remove(downloadPath)
+
+		if err != nil {
+			if ctx.Err() == context.Canceled {
+				return
+			}
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			bh.bot.Edit(msg, "❌ <b>Upload Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			return
+		}
+
+		// === COMPLETION ===
+		finalElapsed := time.Since(startTime).Round(time.Second).String()
+		database.UpdateTaskUploadProgress(taskID, 100, 0)
+		database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
+
+		completeText := fmt.Sprintf("✅ <b>Task #%d Complete!</b>\n\n"+
+			"📄 <b>File:</b> <code>%s</code>\n"+
+			"📦 <b>Size:</b> %s\n"+
+			"⏱ <b>Time:</b> %s\n\n"+
+			"<code>[████████████████████] 100%%</code>",
+			taskID, fileName, formatSize(fileSize), finalElapsed)
+
+		if driveLink != "" {
+			bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML}, driveButton(driveLink))
+		} else {
+			bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+	}()
+
 	return nil
 }
 
@@ -531,6 +798,9 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 				lastUpdate = time.Now()
 			}
 		})
+
+		// Clean up the downloaded file
+		os.Remove(downloadPath)
 
 		if err != nil {
 			if ctx.Err() == context.Canceled {
