@@ -620,7 +620,9 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 
 		// Background tracker for the local proxy download phase
 		trackCtx, trackCancel := context.WithCancel(context.Background())
+		trackDone := make(chan struct{})
 		go func() {
+			defer close(trackDone)
 			var lastSize int64
 			var lastReport time.Time
 			for {
@@ -680,6 +682,7 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 		// Get Telegram file path
 		file, err := bh.bot.FileByID(doc.FileID)
 		trackCancel()
+		<-trackDone // wait for the background updater to finish
 
 		if err != nil {
 			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
