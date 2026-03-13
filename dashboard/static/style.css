@@ -46,6 +46,7 @@ body {
     font-weight: 600;
     background: linear-gradient(90deg, #3b82f6, #8b5cf6);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
@@ -307,4 +308,175 @@ h2 {
     background-color: rgba(156, 163, 175, 0.2);
     color: #9ca3af;
     border: 1px solid #9ca3af;
+}
+
+/* ===== Hamburger Button ===== */
+.hamburger {
+    display: none;
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 1100;
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px;
+    cursor: pointer;
+    flex-direction: column;
+    gap: 5px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.hamburger span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background-color: var(--text-primary);
+    border-radius: 2px;
+    transition: all 0.3s ease;
+}
+
+.hamburger.active span:nth-child(1) {
+    transform: rotate(45deg) translate(5px, 5px);
+}
+
+.hamburger.active span:nth-child(2) {
+    opacity: 0;
+}
+
+.hamburger.active span:nth-child(3) {
+    transform: rotate(-45deg) translate(5px, -5px);
+}
+
+/* ===== Sidebar Overlay ===== */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 999;
+    backdrop-filter: blur(2px);
+}
+
+.sidebar-overlay.active {
+    display: block;
+}
+
+/* ===== Mobile Responsive ===== */
+@media (max-width: 768px) {
+
+    .hamburger {
+        display: flex;
+    }
+
+    .app-container {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        position: fixed;
+        left: -280px;
+        top: 0;
+        bottom: 0;
+        width: 260px;
+        z-index: 1000;
+        transition: left 0.3s ease;
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .sidebar.open {
+        left: 0;
+    }
+
+    .main-content {
+        width: 100%;
+        overflow-x: hidden;
+    }
+
+    header {
+        padding: 16px;
+        padding-top: 60px;  /* space for hamburger */
+    }
+
+    .status-summary {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .stat-card {
+        padding: 16px;
+    }
+
+    .stat-card p {
+        font-size: 1.25rem;
+    }
+
+    .content-area {
+        padding: 16px;
+    }
+
+    /* Make tables horizontally scrollable */
+    .table-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .data-table {
+        min-width: 500px;
+    }
+
+    .data-table th,
+    .data-table td {
+        padding: 10px 12px;
+        font-size: 0.8rem;
+    }
+
+    /* Settings form full width */
+    .settings-form {
+        max-width: 100%;
+        padding: 16px;
+    }
+
+    .form-group input {
+        padding: 10px;
+    }
+
+    .btn {
+        padding: 10px 16px;
+    }
+
+    /* Menu links tap-friendly */
+    .menu a {
+        padding: 14px 24px;
+        font-size: 0.95rem;
+    }
+
+    h2 {
+        font-size: 1.1rem;
+    }
+}
+
+/* ===== Small phones ===== */
+@media (max-width: 400px) {
+
+    header {
+        padding: 12px;
+        padding-top: 56px;
+    }
+
+    .content-area {
+        padding: 12px;
+    }
+
+    .stat-card h3 {
+        font-size: 0.75rem;
+    }
+
+    .stat-card p {
+        font-size: 1.1rem;
+    }
+
+    .data-table {
+        min-width: 420px;
+    }
 }

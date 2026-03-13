@@ -11,7 +11,11 @@
 
 <body>
     <div class="app-container">
-        <aside class="sidebar">
+        <button class="hamburger" id="hamburgerBtn" aria-label="Open menu">
+            <span></span><span></span><span></span>
+        </button>
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+        <aside class="sidebar" id="sidebar">
             <div class="logo">
                 <h2>Cloud Transfer</h2>
             </div>
@@ -143,6 +147,26 @@
                         <div class="form-group">
                             <label for="concurrentTasks">Concurrent Tasks</label>
                             <input type="number" id="concurrentTasks" value="3" />
+                        </div>
+                        <div class="form-group">
+                            <label for="retentionHours">Auto-Delete After (Hours)</label>
+                            <input type="number" id="retentionHours" value="48" />
+                            <small style="color: var(--text-secondary); display: block; margin-top: 4px;">Completed files on Google Drive will be automatically deleted after this many hours. Set to 0 to disable.</small>
+                        </div>
+                        <div class="form-group"
+                            style="padding: 16px; background: rgba(0,0,0,0.1); border-radius: 8px; border: 1px dashed var(--border-color);">
+                            <h3>User Role Limits</h3>
+                            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 12px;">Admin users bypass all limits. Normal users are restricted to the values below.</p>
+                            <div class="form-group">
+                                <label for="adminTelegramIds">Admin Telegram User IDs</label>
+                                <input type="text" id="adminTelegramIds" placeholder="123456789, 987654321" />
+                                <small style="color: var(--text-secondary); display: block; margin-top: 4px;">Comma-separated Telegram user IDs that have admin privileges (unlimited downloads & file size).</small>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label for="maxFileSizeNormal">Max File Size for Normal Users (Bytes)</label>
+                                <input type="number" id="maxFileSizeNormal" value="4294967296" />
+                                <small style="color: var(--text-secondary); display: block; margin-top: 4px;">Default: 4294967296 (4 GB). Normal users are limited to 5 downloads/day.</small>
+                            </div>
                         </div>
                         <button id="save-settings-btn" class="btn btn-primary">Save Settings</button>
                         <p id="settings-msg" style="margin-top: 10px;"></p>

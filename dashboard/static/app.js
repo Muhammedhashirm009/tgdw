@@ -1,4 +1,24 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Mobile sidebar toggle
+    const hamburger = document.getElementById('hamburgerBtn');
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+
+    function toggleSidebar() {
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('active');
+        hamburger.classList.toggle('active');
+    }
+
+    function closeSidebar() {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+        hamburger.classList.remove('active');
+    }
+
+    hamburger.addEventListener('click', toggleSidebar);
+    overlay.addEventListener('click', closeSidebar);
+
     // Navigation routing
     const links = document.querySelectorAll('.menu a');
     const views = document.querySelectorAll('.view');
@@ -18,6 +38,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const targetViewId = link.getAttribute('data-view') + '-view';
             const targetView = document.getElementById(targetViewId);
             if (targetView) targetView.classList.add('active');
+
+            // Close sidebar on mobile after navigation
+            closeSidebar();
         });
     });
 
@@ -238,6 +261,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('telegramApiEndpoint').value = data.telegram_api_endpoint || "http://localhost:8081";
                 document.getElementById('telegramApiId').value = data.telegram_api_id || "";
                 document.getElementById('telegramApiHash').value = data.telegram_api_hash || "";
+                document.getElementById('retentionHours').value = data.retention_hours || 48;
+                document.getElementById('adminTelegramIds').value = data.admin_telegram_ids || "";
+                document.getElementById('maxFileSizeNormal').value = data.max_file_size_normal || 4294967296;
 
                 if (data.bot_token) {
                     document.getElementById('botToken').placeholder = "Token is set (hidden)";
@@ -278,7 +304,10 @@ document.addEventListener('DOMContentLoaded', () => {
             concurrent_tasks: parseInt(document.getElementById('concurrentTasks').value) || 3,
             telegram_api_endpoint: document.getElementById('telegramApiEndpoint').value,
             telegram_api_id: document.getElementById('telegramApiId').value,
-            telegram_api_hash: document.getElementById('telegramApiHash').value
+            telegram_api_hash: document.getElementById('telegramApiHash').value,
+            retention_hours: parseInt(document.getElementById('retentionHours').value) || 48,
+            admin_telegram_ids: document.getElementById('adminTelegramIds').value,
+            max_file_size_normal: parseInt(document.getElementById('maxFileSizeNormal').value) || 4294967296
         };
 
         fetch('/api/settings', {
@@ -290,7 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .then(data => {
                 if (data.success) {
                     settingsMsg.style.color = "var(--success-color)";
-                    settingsMsg.textContent = "Settings saved successfully! Reboot the server to apply changes.";
+                    settingsMsg.textContent = "Settings saved successfully! Changes will apply automatically.";
                 } else {
                     settingsMsg.style.color = "var(--danger-color)";
                     settingsMsg.textContent = data.error || "Failed to save.";
