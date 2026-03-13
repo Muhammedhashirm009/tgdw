@@ -4,6 +4,7 @@ A Telegram bot that receives files and automatically uploads them to Google Driv
 
 ## Features
 
+- 🧲 **Torrent & Magnet Links** — Send `.torrent` files or `magnet:?` links to download using BitTorrent, auto-zipped if it's a folder
 - 🔗 **Direct URL Download** — Send HTTP/HTTPS links to pull files straight from the web
 - 📥 **File Transfer** — Send files to the bot, auto-uploaded to a `telecloud` folder on Google Drive
 - 📊 **Real-time Progress** — Visual progress bars with speed, ETA, and elapsed time

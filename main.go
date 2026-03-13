@@ -46,7 +46,7 @@ func main() {
 				if settings.BotToken == "" {
 					log.Println("bot_token not configured in database. Telegram bot will not start. Please configure via Dashboard.")
 				} else {
-					orchestrator.Reload(settings.BotToken, settings.TelegramAPIEndpoint)
+					orchestrator.Reload(settings.BotToken, settings.TelegramAPIEndpoint, settings.DownloadDirectory)
 				}
 			} else {
 				log.Printf("Warning: Failed to load settings from DB: %v", err)

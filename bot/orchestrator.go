@@ -19,7 +19,7 @@ func NewBotOrchestrator() *BotOrchestrator {
 }
 
 // Reload checks if the token changed and restarts the bot if necessary
-func (bo *BotOrchestrator) Reload(newToken string, apiURL string) {
+func (bo *BotOrchestrator) Reload(newToken string, apiURL string, dlDir string) {
 	bo.mu.Lock()
 	defer bo.mu.Unlock()
 
@@ -39,7 +39,7 @@ func (bo *BotOrchestrator) Reload(newToken string, apiURL string) {
 	}
 
 	// Start new bot
-	bh, err := NewBot(newToken, apiURL)
+	bh, err := NewBot(newToken, apiURL, dlDir)
 	if err != nil {
 		log.Printf("Failed to initialize bot with new token: %v", err)
 		return
