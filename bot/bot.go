@@ -451,7 +451,7 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 			return
 		}
 
-		// Open the HTTP stream
+		// Open the HTTP stream (no timeout for streaming large files)
 		req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 		if err != nil {
 			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
@@ -459,6 +459,13 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 			return
 		}
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+		
+		client := &http.Client{
+			Transport: &http.Transport{
+				DisableKeepAlives: false,
+			},
+			Timeout: 0, // No timeout for large streams
+		}
 		
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode >= 400 {
@@ -781,7 +788,14 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 				return
 			}
 			
-			resp, err := http.DefaultClient.Do(req)
+			client := &http.Client{
+				Transport: &http.Transport{
+					DisableKeepAlives: false,
+				},
+				Timeout: 0, // No timeout for large streams
+			}
+			
+			resp, err := client.Do(req)
 			if err != nil || resp.StatusCode >= 400 {
 				database.UpdateTaskStatus(taskID, "Failed", "", "", "")
 				bh.bot.Edit(msg, "❌ <b>Download Failed:</b> HTTP Error", &tele.SendOptions{ParseMode: tele.ModeHTML})
