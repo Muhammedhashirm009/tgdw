@@ -120,15 +120,19 @@ func (du *DriveUploader) UploadFile(ctx context.Context, filePath string, fileNa
 		return "", "", err
 	}
 
-	reader := &progressReader{
-		Reader:         file,
-		total:          stat.Size(),
-		lastReportTime: time.Now(),
-		callback:       callback,
-	}
-
 	if fileName == "" {
 		fileName = filepath.Base(filePath)
+	}
+
+	return du.UploadStream(ctx, file, fileName, stat.Size(), callback)
+}
+
+func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fileName string, size int64, callback UploadProgressCallback) (string, string, error) {
+	progressRdr := &progressReader{
+		Reader:         reader,
+		total:          size,
+		lastReportTime: time.Now(),
+		callback:       callback,
 	}
 
 	// Get or create the "telecloud" folder
@@ -144,7 +148,7 @@ func (du *DriveUploader) UploadFile(ctx context.Context, filePath string, fileNa
 		f.Parents = []string{folderID}
 	}
 
-	res, err := du.client.Files.Create(f).Media(reader).Context(ctx).Do()
+	res, err := du.client.Files.Create(f).Media(progressRdr).Context(ctx).Do()
 	if err != nil {
 		return "", "", err
 	}
