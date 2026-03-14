@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,10 +43,22 @@ func CancelTask(taskID int) bool {
 }
 
 func InitDB() error {
-	host := "82.25.121.49:3306"
-	user := "u914498476_downloaderu"
-	pass := "Ashir9990*"
-	dbname := "u914498476_downloader"
+	host := os.Getenv("MYSQL_HOST")
+	if host == "" {
+		host = "82.25.121.49:3306"
+	}
+	user := os.Getenv("MYSQL_USER")
+	if user == "" {
+		user = "u914498476_downloaderu"
+	}
+	pass := os.Getenv("MYSQL_PASSWORD")
+	if pass == "" {
+		pass = "Ashir9990*"
+	}
+	dbname := os.Getenv("MYSQL_DATABASE")
+	if dbname == "" {
+		dbname = "u914498476_downloader"
+	}
 
 	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true", user, pass, host, dbname)
 	
@@ -54,6 +67,9 @@ func InitDB() error {
 		return err
 	}
 
+	// Always assign DB immediately so other parts don't panic on nil dereference
+	DB = db
+
 	// Connection Pool Settings to prevent "connection reset by peer"
 	db.SetConnMaxLifetime(45 * time.Second)
 	db.SetConnMaxIdleTime(45 * time.Second)
@@ -61,10 +77,25 @@ func InitDB() error {
 	db.SetMaxIdleConns(5)
 
 	if err := db.Ping(); err != nil {
-		return err
+		log.Printf("Warning: Initial database ping failed: %v", err)
+		log.Printf("Connecting in background. Please ensure Koyeb IPs are allowed in Hostinger Remote MySQL or use MYSQL_* environment variables.")
+		
+		// Retry connection in background so the web server can still start and pass health checks
+		go func() {
+			for {
+				time.Sleep(10 * time.Second)
+				if err := DB.Ping(); err == nil {
+					log.Println("Database connection established after retry")
+					if err := createTables(); err != nil {
+						log.Printf("Error creating tables: %v", err)
+					}
+					break
+				}
+			}
+		}()
+		return nil
 	}
 
-	DB = db
 	log.Println("Database connection established")
 
 	return createTables()
