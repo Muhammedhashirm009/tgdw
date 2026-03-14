@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -196,9 +197,12 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 		f.Parents = []string{folderID}
 	}
 
-	// For stream uploading, we just pass the io.Reader to Media(). The Google Drive API client 
-	// handles chunked resumable uploads automatically if it detects an io.Reader that is not an *os.File.
-	res, err := du.client.Files.Create(f).Media(pr).Context(ctx).Do()
+	// For stream uploading, we just pass the io.Reader to Media(). 
+	// By specifying the ContentType statically, we prevent the SDK from
+	// doing a 512-byte "MIME sniff" which can block/hang the reader entirely.
+	res, err := du.client.Files.Create(f).
+		Media(pr, googleapi.ContentType("application/octet-stream")).
+		Context(ctx).Do()
 	if err != nil {
 		return "", "", err
 	}
