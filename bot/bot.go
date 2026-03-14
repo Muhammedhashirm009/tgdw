@@ -461,30 +461,32 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 				}
 
 				if time.Since(lastUpdate) > 3*time.Second {
-					progress := 0
-					if total > 0 {
-						progress = int((float64(downloaded) / float64(total)) * 100)
-					}
-					database.UpdateTaskDownloadProgress(taskID, progress, speed)
-					database.UpdateTaskUploadProgress(taskID, progress, speed) // Keep them synced in UI
-
-					eta := calcETA(total-downloaded, speed)
-					if total <= 0 {
-						eta = "unknown"
-					}
-					elapsed := time.Since(startTime).Round(time.Second).String()
-
-					text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
-						"📄 <code>%s</code>\n"+
-						"<code>[%s] %d%%</code>\n\n"+
-						"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
-						"<i>/cancel %d to abort</i>",
-						taskID, fileName,
-						progressBar(progress), progress,
-						formatSize(speed), eta, elapsed, taskID)
-
-					bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
 					lastUpdate = time.Now()
+					go func(dl, tot, spd int64) {
+						progress := 0
+						if tot > 0 {
+							progress = int((float64(dl) / float64(tot)) * 100)
+						}
+						database.UpdateTaskDownloadProgress(taskID, progress, spd)
+						database.UpdateTaskUploadProgress(taskID, progress, spd) // Keep them synced in UI
+
+						eta := calcETA(tot-dl, spd)
+						if tot <= 0 {
+							eta = "unknown"
+						}
+						elapsed := time.Since(startTime).Round(time.Second).String()
+
+						text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
+							"📄 <code>%s</code>\n"+
+							"<code>[%s] %d%%</code>\n\n"+
+							"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+							"<i>/cancel %d to abort</i>",
+							taskID, fileName,
+							progressBar(progress), progress,
+							formatSize(spd), eta, elapsed, taskID)
+
+						bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+					}(downloaded, total, speed)
 				}
 			})
 			if err != nil && err != io.EOF {
@@ -939,32 +941,34 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 
 			// We use the downloader callback for the UI updates since that represents exactly what is entering the pipe
 			if time.Since(lastUpdate) > 3*time.Second {
-				progress := 0
-				if total > 0 {
-					progress = int((float64(downloaded) / float64(total)) * 100)
-				}
-				database.UpdateTaskDownloadProgress(taskID, progress, speed)
-				database.UpdateTaskUploadProgress(taskID, progress, speed) // Keep them synced in UI
-
-				if msg != nil {
-					eta := calcETA(total-downloaded, speed)
-					if total <= 0 {
-						eta = "unknown"
-					}
-					elapsed := time.Since(startTime).Round(time.Second).String()
-
-					text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
-						"📄 <code>%s</code>\n"+
-						"<code>[%s] %d%%</code>\n\n"+
-						"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
-						"<i>/cancel %d to abort</i>",
-						taskID, fileName,
-						progressBar(progress), progress,
-						formatSize(speed), eta, elapsed, taskID)
-
-					bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
-				}
 				lastUpdate = time.Now()
+				go func(dl, tot, spd int64) {
+					progress := 0
+					if tot > 0 {
+						progress = int((float64(dl) / float64(tot)) * 100)
+					}
+					database.UpdateTaskDownloadProgress(taskID, progress, spd)
+					database.UpdateTaskUploadProgress(taskID, progress, spd) // Keep them synced in UI
+
+					if msg != nil {
+						eta := calcETA(tot-dl, spd)
+						if tot <= 0 {
+							eta = "unknown"
+						}
+						elapsed := time.Since(startTime).Round(time.Second).String()
+
+						text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
+							"📄 <code>%s</code>\n"+
+							"<code>[%s] %d%%</code>\n\n"+
+							"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+							"<i>/cancel %d to abort</i>",
+							taskID, fileName,
+							progressBar(progress), progress,
+							formatSize(spd), eta, elapsed, taskID)
+
+						bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+					}
+				}(downloaded, total, speed)
 			}
 		})
 		if err != nil && err != io.EOF {

@@ -70,9 +70,8 @@ func InitDB() error {
 	// Always assign DB immediately so other parts don't panic on nil dereference
 	DB = db
 
-	// Connection Pool Settings to prevent "connection reset by peer"
-	db.SetConnMaxLifetime(45 * time.Second)
-	db.SetConnMaxIdleTime(45 * time.Second)
+	// Connection Pool Settings
+	db.SetConnMaxLifetime(1 * time.Minute)
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 
@@ -367,22 +366,30 @@ func GetTasksByTelegramUser(telegramUserID int64, limit int) ([]Task, error) {
 }
 
 func UpdateTaskStatus(taskID int, status string, driveLink string, driveFileID string, elapsedTime string) error {
-	_, err := DB.Exec("UPDATE tasks SET status = ?, drive_link = ?, drive_file_id = ?, elapsed_time = ? WHERE id = ?", status, driveLink, driveFileID, elapsedTime, taskID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := DB.ExecContext(ctx, "UPDATE tasks SET status = ?, drive_link = ?, drive_file_id = ?, elapsed_time = ? WHERE id = ?", status, driveLink, driveFileID, elapsedTime, taskID)
 	return err
 }
 
 func UpdateTaskFileSize(taskID int, fileSize int64) error {
-	_, err := DB.Exec("UPDATE tasks SET file_size = ? WHERE id = ?", fileSize, taskID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := DB.ExecContext(ctx, "UPDATE tasks SET file_size = ? WHERE id = ?", fileSize, taskID)
 	return err
 }
 
 func UpdateTaskDownloadProgress(taskID int, progress int, speed int64) error {
-	_, err := DB.Exec("UPDATE tasks SET download_progress = ?, download_speed = ? WHERE id = ?", progress, speed, taskID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := DB.ExecContext(ctx, "UPDATE tasks SET download_progress = ?, download_speed = ? WHERE id = ?", progress, speed, taskID)
 	return err
 }
 
 func UpdateTaskUploadProgress(taskID int, progress int, speed int64) error {
-	_, err := DB.Exec("UPDATE tasks SET upload_progress = ?, upload_speed = ? WHERE id = ?", progress, speed, taskID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := DB.ExecContext(ctx, "UPDATE tasks SET upload_progress = ?, upload_speed = ? WHERE id = ?", progress, speed, taskID)
 	return err
 }
 
