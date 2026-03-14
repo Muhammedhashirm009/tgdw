@@ -371,6 +371,11 @@ func UpdateTaskStatus(taskID int, status string, driveLink string, driveFileID s
 	return err
 }
 
+func UpdateTaskFileSize(taskID int, fileSize int64) error {
+	_, err := DB.Exec("UPDATE tasks SET file_size = ? WHERE id = ?", fileSize, taskID)
+	return err
+}
+
 func UpdateTaskDownloadProgress(taskID int, progress int, speed int64) error {
 	_, err := DB.Exec("UPDATE tasks SET download_progress = ?, download_speed = ? WHERE id = ?", progress, speed, taskID)
 	return err

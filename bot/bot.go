@@ -424,6 +424,11 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 		// === DOWNLOAD PHASE ===
 		lastUpdate := time.Now()
 		downloadPath, err = downloader.DownloadHTTP(ctx, downloadURL, settings.DownloadDirectory, fileName, func(downloaded, total, speed int64) {
+			if fileSize <= 0 && total > 0 {
+				fileSize = total
+				database.UpdateTaskFileSize(taskID, fileSize)
+			}
+
 			if time.Since(lastUpdate) > 3*time.Second {
 				progress := 0
 				if total > 0 {
@@ -901,6 +906,11 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 	// === DOWNLOAD PHASE ===
 	lastUpdate := time.Now()
 	downloadPath, err = downloader.DownloadHTTP(ctx, downloadURL, settings.DownloadDirectory, fileName, func(downloaded, total, speed int64) {
+		if fileSize <= 0 && total > 0 {
+			fileSize = total
+			database.UpdateTaskFileSize(taskID, fileSize)
+		}
+		
 		if time.Since(lastUpdate) > 3*time.Second {
 			progress := 0
 			if total > 0 {
