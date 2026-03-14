@@ -58,3 +58,18 @@ func (bh *BotHandler) Stop() {
 		bh.bot.Stop()
 	}
 }
+
+// HandleBridgeTask accepts a task from the dashboard extension bridge
+func (bo *BotOrchestrator) HandleBridgeTask(taskID int, url string, filename string, fileSize int64, telegramChatID int64) error {
+	bo.mu.Lock()
+	bh := bo.botHandler
+	bo.mu.Unlock()
+
+	if bh == nil {
+		log.Printf("Bridge: Bot is not running, but task %d was accepted to DB.", taskID)
+		return nil // We don't error out the HTTP request, just log it. The task stays "Pending".
+	}
+
+	go bh.processBridgeTask(taskID, url, filename, fileSize, telegramChatID)
+	return nil
+}

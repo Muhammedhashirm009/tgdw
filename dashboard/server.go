@@ -19,9 +19,10 @@ import (
 )
 
 type Server struct {
-	addr       string
-	sessions   sync.Map // Map[token]username
-	rateLimits sync.Map // Map[userID][]time.Time for rate limiting
+	addr         string
+	sessions     sync.Map // Map[token]username
+	rateLimits   sync.Map // Map[userID][]time.Time for rate limiting
+	OnBridgeTask func(taskID int, url string, filename string, fileSize int64, adminID int64) error
 }
 
 func generateSessionToken() string {
@@ -545,6 +546,12 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 		if len(ids) > 0 {
 			fmt.Sscanf(strings.TrimSpace(ids[0]), "%d", &chatID)
 		}
+	}
+
+	// Trigger the bot orchestrator to start downloading!
+	if s.OnBridgeTask != nil {
+		// size is passed as 0 because the bot handles fetching exact size from HEAD request
+		s.OnBridgeTask(taskID, req.URL, req.Filename, 0, chatID)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

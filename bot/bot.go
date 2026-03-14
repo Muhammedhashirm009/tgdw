@@ -799,7 +799,7 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 			}
 		})
 
-		// Clean up the downloaded file
+		// Clean up the local file after upload
 		os.Remove(downloadPath)
 
 		if err != nil {
@@ -833,12 +833,13 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 	return nil
 }
 
-// calcETA computes estimated time remaining
-func calcETA(bytesRemaining, speed int64) string {
+// ===== Common Functions =====
+
+func calcETA(remainingBytes, speed int64) string {
 	if speed <= 0 {
 		return "calculating..."
 	}
-	seconds := bytesRemaining / speed
+	seconds := remainingBytes / speed
 	if seconds < 60 {
 		return fmt.Sprintf("%ds", seconds)
 	}
@@ -846,4 +847,193 @@ func calcETA(bytesRemaining, speed int64) string {
 		return fmt.Sprintf("%dm %ds", seconds/60, seconds%60)
 	}
 	return fmt.Sprintf("%dh %dm", seconds/3600, (seconds%3600)/60)
+}
+
+// ===== Bridge Extension Logic =====
+
+func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName string, initialSize int64, chatID int64) {
+	// Let's send a starting message to Telegram if admin is configured
+	var msg *tele.Message
+	if chatID > 0 {
+		chat := &tele.Chat{ID: chatID}
+		startText := fmt.Sprintf("🔌 <b>New Extension Download</b>\n\n"+
+			"📄 <b>Name:</b> <code>%s</code>\n"+
+			"🔗 <b>Source:</b> %s\n"+
+			"⏳ <b>Status:</b> Starting...",
+			fileName, downloadURL)
+
+		m, err := bh.bot.Send(chat, startText, &tele.SendOptions{ParseMode: tele.ModeHTML})
+		if err == nil {
+			msg = m
+		} else {
+			log.Printf("Failed to notify admin about bridge task: %v", err)
+		}
+	}
+
+	settings, err := database.GetSettings()
+	if err != nil || settings.AccessToken == "" {
+		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+		if msg != nil {
+			bh.bot.Edit(msg, "❌ <b>Task Failed:</b> Google Drive not configured.", &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+		return
+	}
+
+	database.UpdateTaskStatus(taskID, "Downloading", "", "", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	database.RegisterCancelFunc(taskID, cancel)
+
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			if msg != nil {
+				bh.bot.Edit(msg, fmt.Sprintf("❌ <b>Bridge Task #%d failed unexpectedly.</b>", taskID), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+		}
+	}()
+
+	var downloadPath string
+	fileSize := initialSize
+	startTime := time.Now()
+
+	// === DOWNLOAD PHASE ===
+	lastUpdate := time.Now()
+	downloadPath, err = downloader.DownloadHTTP(ctx, downloadURL, settings.DownloadDirectory, fileName, func(downloaded, total, speed int64) {
+		if time.Since(lastUpdate) > 3*time.Second {
+			progress := 0
+			if total > 0 {
+				progress = int((float64(downloaded) / float64(total)) * 100)
+			}
+			database.UpdateTaskDownloadProgress(taskID, progress, speed)
+
+			if msg != nil {
+				eta := calcETA(total-downloaded, speed)
+				if total <= 0 {
+					eta = "unknown"
+				}
+				elapsed := time.Since(startTime).Round(time.Second).String()
+
+				text := fmt.Sprintf("🔌 <b>Bridge Download</b> [#%d]\n\n"+
+					"📄 <code>%s</code>\n"+
+					"<code>[%s] %d%%</code>\n\n"+
+					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+					"<i>/cancel %d to abort</i>",
+					taskID, fileName,
+					progressBar(progress), progress,
+					formatSize(speed), eta, elapsed, taskID)
+
+				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+			lastUpdate = time.Now()
+		}
+	})
+
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			return
+		}
+		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+		if msg != nil {
+			bh.bot.Edit(msg, "❌ <b>Bridge Download Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+		return
+	}
+
+	// Update size if it was unknown (e.g. from extension just clicking link)
+	if fileSize <= 0 {
+		if stat, statErr := os.Stat(downloadPath); statErr == nil {
+			fileSize = stat.Size()
+		}
+	}
+
+	// === UPLOAD PHASE ===
+	database.UpdateTaskDownloadProgress(taskID, 100, 0)
+	database.UpdateTaskStatus(taskID, "Uploading", "", "", "")
+
+	if msg != nil {
+		bh.bot.Edit(msg, fmt.Sprintf("☁️ <b>Bridge Uploading to Drive</b> [#%d]\n\n"+
+			"📄 <code>%s</code>\n"+
+			"<code>[%s] 0%%</code>\n\n"+
+			"⏳ Starting upload...",
+			taskID, fileName, progressBar(0)), &tele.SendOptions{ParseMode: tele.ModeHTML})
+	}
+
+	token := &oauth2.Token{
+		AccessToken:  settings.AccessToken,
+		RefreshToken: settings.RefreshToken,
+		Expiry:       settings.TokenExpiry,
+		TokenType:    "Bearer",
+	}
+
+	uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
+	if err != nil {
+		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+		if msg != nil {
+			bh.bot.Edit(msg, "❌ <b>Upload Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+		return
+	}
+
+	lastUpdate = time.Now()
+	driveLink, driveFileID, err := uploaderInstance.UploadFile(ctx, downloadPath, fileName, func(uploaded, total, speed int64) {
+		if time.Since(lastUpdate) > 3*time.Second {
+			progress := 0
+			if total > 0 {
+				progress = int((float64(uploaded) / float64(total)) * 100)
+			}
+			database.UpdateTaskUploadProgress(taskID, progress, speed)
+
+			if msg != nil {
+				eta := calcETA(total-uploaded, speed)
+				elapsed := time.Since(startTime).Round(time.Second).String()
+
+				text := fmt.Sprintf("☁️ <b>Bridge Uploading</b> [#%d]\n\n"+
+					"📄 <code>%s</code>\n"+
+					"<code>[%s] %d%%</code>\n\n"+
+					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+					"<i>/cancel %d to abort</i>",
+					taskID, fileName,
+					progressBar(progress), progress,
+					formatSize(speed), eta, elapsed, taskID)
+
+				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+			lastUpdate = time.Now()
+		}
+	})
+
+	os.Remove(downloadPath)
+
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			return
+		}
+		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+		if msg != nil {
+			bh.bot.Edit(msg, "❌ <b>Bridge Upload Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+		return
+	}
+
+	// === COMPLETION ===
+	finalElapsed := time.Since(startTime).Round(time.Second).String()
+	database.UpdateTaskUploadProgress(taskID, 100, 0)
+	database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
+
+	if msg != nil {
+		completeText := fmt.Sprintf("✅ <b>Bridge Task #%d Complete!</b>\n\n"+
+			"📄 <b>File:</b> <code>%s</code>\n"+
+			"📦 <b>Size:</b> %s\n"+
+			"⏱ <b>Time:</b> %s\n\n"+
+			"<code>[████████████████████] 100%%</code>",
+			taskID, fileName, formatSize(fileSize), finalElapsed)
+
+		if driveLink != "" {
+			bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML}, driveButton(driveLink))
+		} else {
+			bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+	}
 }

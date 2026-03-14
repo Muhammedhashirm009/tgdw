@@ -21,6 +21,9 @@ func main() {
 		log.Printf("Ensure MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE are set.")
 	}
 
+	// Handle Bot Orchestration dynamically for token changes
+	orchestrator := bot.NewBotOrchestrator()
+
 	// Start Web Dashboard
 	go func() {
 		// Use port 9990 by default
@@ -30,13 +33,12 @@ func main() {
 		}
 		
 		server := dashboard.NewServer(":" + port)
+		server.OnBridgeTask = orchestrator.HandleBridgeTask // Wire bridge API to Bot Orchestrator
+
 		if err := server.Start(); err != nil {
 			log.Fatalf("Dashboard server failed: %v", err)
 		}
 	}()
-
-	// Handle Bot Orchestration dynamically for token changes
-	orchestrator := bot.NewBotOrchestrator()
 	
 	// Poll settings and reload bot if token changes
 	go func() {
