@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -418,73 +419,17 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 			}
 		}()
 
-		var downloadPath string
 		startTime := time.Now()
 
-		// === DOWNLOAD PHASE ===
-		lastUpdate := time.Now()
-		downloadPath, err = downloader.DownloadHTTP(ctx, downloadURL, settings.DownloadDirectory, fileName, func(downloaded, total, speed int64) {
-			if fileSize <= 0 && total > 0 {
-				fileSize = total
-				database.UpdateTaskFileSize(taskID, fileSize)
-			}
+		// === STREAM PHASE ===
+		database.UpdateTaskStatus(taskID, "Streaming to Drive", "", "", "")
 
-			if time.Since(lastUpdate) > 3*time.Second {
-				progress := 0
-				if total > 0 {
-					progress = int((float64(downloaded) / float64(total)) * 100)
-				}
-				
-				database.UpdateTaskDownloadProgress(taskID, progress, speed)
-
-				eta := calcETA(total-downloaded, speed)
-				if total <= 0 {
-					eta = "unknown"
-				}
-				
-				elapsed := time.Since(startTime).Round(time.Second).String()
-
-				text := fmt.Sprintf("📥 <b>Downloading Web Link</b> [#%d]\n\n"+
-					"📄 <code>%s</code>\n"+
-					"<code>[%s] %d%%</code>\n\n"+
-					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
-					"<i>/cancel %d to abort</i>",
-					taskID, fileName,
-					progressBar(progress), progress,
-					formatSize(speed), eta, elapsed, taskID)
-
-				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
-				lastUpdate = time.Now()
-			}
-		})
-
-		if err != nil {
-			if ctx.Err() == context.Canceled {
-				return
-			}
-			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-			bh.bot.Edit(msg, "❌ <b>Download Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
-			return
-		}
-
-		// Update actual file size if it was unknown
-		if fileSize <= 0 {
-			if stat, statErr := os.Stat(downloadPath); statErr == nil {
-				fileSize = stat.Size()
-				// Unfortunately updating DB schema for file_size after creation requires another func, 
-				// but progress is tracked at 100% now so it's okay.
-			}
-		}
-
-		// === UPLOAD PHASE ===
-		database.UpdateTaskDownloadProgress(taskID, 100, 0)
-		database.UpdateTaskStatus(taskID, "Uploading", "", "", "")
-
-		bh.bot.Edit(msg, fmt.Sprintf("☁️ <b>Uploading to Google Drive</b> [#%d]\n\n"+
+		initialText := fmt.Sprintf("🌊 <b>Streaming to Google Drive</b> [#%d]\n\n"+
 			"📄 <code>%s</code>\n"+
 			"<code>[%s] 0%%</code>\n\n"+
-			"⏳ Starting upload...",
-			taskID, fileName, progressBar(0)), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			"⏳ Starting stream connection...",
+			taskID, fileName, progressBar(0))
+		bh.bot.Edit(msg, initialText, &tele.SendOptions{ParseMode: tele.ModeHTML})
 
 		token := &oauth2.Token{
 			AccessToken:  settings.AccessToken,
@@ -496,55 +441,102 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 		uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
 		if err != nil {
 			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-			bh.bot.Edit(msg, "❌ <b>Upload Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			bh.bot.Edit(msg, "❌ <b>Stream Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 			return
 		}
 
-		lastUpdate = time.Now()
-		driveLink, driveFileID, err := uploaderInstance.UploadFile(ctx, downloadPath, fileName, func(uploaded, total, speed int64) {
-			if time.Since(lastUpdate) > 3*time.Second {
-				progress := 0
-				if total > 0 {
-					progress = int((float64(uploaded) / float64(total)) * 100)
+		// Create an io.Pipe to connect the HTTP downloader to the Google Drive uploader in memory
+		pr, pw := io.Pipe()
+
+		errChan := make(chan error, 2)
+		lastUpdate := time.Now()
+
+		// Goroutine 1: Downloader writes to pw
+		go func() {
+			defer pw.Close()
+			_, err := downloader.StreamTransfer(ctx, downloadURL, pw, func(downloaded, total, speed int64) {
+				if fileSize <= 0 && total > 0 {
+					fileSize = total
+					database.UpdateTaskFileSize(taskID, fileSize)
 				}
-				
-				database.UpdateTaskUploadProgress(taskID, progress, speed)
 
-				eta := calcETA(total-uploaded, speed)
-				elapsed := time.Since(startTime).Round(time.Second).String()
+				if time.Since(lastUpdate) > 3*time.Second {
+					progress := 0
+					if total > 0 {
+						progress = int((float64(downloaded) / float64(total)) * 100)
+					}
+					database.UpdateTaskDownloadProgress(taskID, progress, speed)
+					database.UpdateTaskUploadProgress(taskID, progress, speed) // Keep them synced in UI
 
-				text := fmt.Sprintf("☁️ <b>Uploading</b> [#%d]\n\n"+
-					"📄 <code>%s</code>\n"+
-					"<code>[%s] %d%%</code>\n\n"+
-					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
-					"<i>/cancel %d to abort</i>",
-					taskID, fileName,
-					progressBar(progress), progress,
-					formatSize(speed), eta, elapsed, taskID)
+					eta := calcETA(total-downloaded, speed)
+					if total <= 0 {
+						eta = "unknown"
+					}
+					elapsed := time.Since(startTime).Round(time.Second).String()
 
-				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
-				lastUpdate = time.Now()
+					text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
+						"📄 <code>%s</code>\n"+
+						"<code>[%s] %d%%</code>\n\n"+
+						"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+						"<i>/cancel %d to abort</i>",
+						taskID, fileName,
+						progressBar(progress), progress,
+						formatSize(speed), eta, elapsed, taskID)
+
+					bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+					lastUpdate = time.Now()
+				}
+			})
+			if err != nil && err != io.EOF {
+				errChan <- fmt.Errorf("Download error: %v", err)
+			} else {
+				errChan <- nil
 			}
-		})
+		}()
 
-		// Clean up the local file after upload
-		os.Remove(downloadPath)
+		// Goroutine 2: Uploader reads from pr (Blocking call)
+		var driveLink, driveFileID string
+		var uploadErr error
+		go func() {
+			defer pr.Close()
+			driveLink, driveFileID, uploadErr = uploaderInstance.UploadStream(ctx, pr, fileName, nil)
+			if uploadErr != nil {
+				errChan <- fmt.Errorf("Upload error: %v", uploadErr)
+			} else {
+				errChan <- nil
+			}
+		}()
 
-		if err != nil {
+		// Wait for both pipeline stages to finish
+		err1 := <-errChan
+		err2 := <-errChan
+
+		if err1 != nil || err2 != nil {
 			if ctx.Err() == context.Canceled {
 				return
 			}
+			
+			var finalErrStr string
+			if err1 != nil { finalErrStr += err1.Error() + "\n" }
+			if err2 != nil { finalErrStr += err2.Error() + "\n" }
+
 			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-			bh.bot.Edit(msg, "❌ <b>Upload Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			bh.bot.Edit(msg, "❌ <b>Streaming Failed:</b>\n"+finalErrStr, &tele.SendOptions{ParseMode: tele.ModeHTML})
 			return
+		}
+
+		// Update actual file size if it was still unknown
+		if fileSize <= 0 {
+			fileSize = 1024 // Placeholder, streams often lose total size context.
 		}
 
 		// === COMPLETION ===
 		finalElapsed := time.Since(startTime).Round(time.Second).String()
+		database.UpdateTaskDownloadProgress(taskID, 100, 0)
 		database.UpdateTaskUploadProgress(taskID, 100, 0)
 		database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
 
-		completeText := fmt.Sprintf("✅ <b>Task #%d Complete!</b>\n\n"+
+		completeText := fmt.Sprintf("✅ <b>Stream Task #%d Complete!</b>\n\n"+
 			"📄 <b>File:</b> <code>%s</code>\n"+
 			"📦 <b>Size:</b> %s\n"+
 			"⏱ <b>Time:</b> %s\n\n"+
@@ -899,75 +891,19 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 		}
 	}()
 
-	var downloadPath string
 	fileSize := initialSize
 	startTime := time.Now()
 
-	// === DOWNLOAD PHASE ===
-	lastUpdate := time.Now()
-	downloadPath, err = downloader.DownloadHTTP(ctx, downloadURL, settings.DownloadDirectory, fileName, func(downloaded, total, speed int64) {
-		if fileSize <= 0 && total > 0 {
-			fileSize = total
-			database.UpdateTaskFileSize(taskID, fileSize)
-		}
-		
-		if time.Since(lastUpdate) > 3*time.Second {
-			progress := 0
-			if total > 0 {
-				progress = int((float64(downloaded) / float64(total)) * 100)
-			}
-			database.UpdateTaskDownloadProgress(taskID, progress, speed)
-
-			if msg != nil {
-				eta := calcETA(total-downloaded, speed)
-				if total <= 0 {
-					eta = "unknown"
-				}
-				elapsed := time.Since(startTime).Round(time.Second).String()
-
-				text := fmt.Sprintf("🔌 <b>Bridge Download</b> [#%d]\n\n"+
-					"📄 <code>%s</code>\n"+
-					"<code>[%s] %d%%</code>\n\n"+
-					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
-					"<i>/cancel %d to abort</i>",
-					taskID, fileName,
-					progressBar(progress), progress,
-					formatSize(speed), eta, elapsed, taskID)
-
-				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
-			}
-			lastUpdate = time.Now()
-		}
-	})
-
-	if err != nil {
-		if ctx.Err() == context.Canceled {
-			return
-		}
-		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-		if msg != nil {
-			bh.bot.Edit(msg, "❌ <b>Bridge Download Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
-		}
-		return
-	}
-
-	// Update size if it was unknown (e.g. from extension just clicking link)
-	if fileSize <= 0 {
-		if stat, statErr := os.Stat(downloadPath); statErr == nil {
-			fileSize = stat.Size()
-		}
-	}
-
-	// === UPLOAD PHASE ===
-	database.UpdateTaskDownloadProgress(taskID, 100, 0)
-	database.UpdateTaskStatus(taskID, "Uploading", "", "", "")
+	// === STREAM PHASE ===
+	database.UpdateTaskStatus(taskID, "Streaming to Drive", "", "", "")
 
 	if msg != nil {
-		bh.bot.Edit(msg, fmt.Sprintf("☁️ <b>Bridge Uploading to Drive</b> [#%d]\n\n"+
+		initialText := fmt.Sprintf("🌊 <b>Streaming to Google Drive</b> [#%d]\n\n"+
 			"📄 <code>%s</code>\n"+
 			"<code>[%s] 0%%</code>\n\n"+
-			"⏳ Starting upload...",
-			taskID, fileName, progressBar(0)), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			"⏳ Starting stream connection...",
+			taskID, fileName, progressBar(0))
+		bh.bot.Edit(msg, initialText, &tele.SendOptions{ParseMode: tele.ModeHTML})
 	}
 
 	token := &oauth2.Token{
@@ -981,59 +917,104 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 	if err != nil {
 		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
 		if msg != nil {
-			bh.bot.Edit(msg, "❌ <b>Upload Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			bh.bot.Edit(msg, "❌ <b>Stream Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
 		}
 		return
 	}
 
-	lastUpdate = time.Now()
-	driveLink, driveFileID, err := uploaderInstance.UploadFile(ctx, downloadPath, fileName, func(uploaded, total, speed int64) {
-		if time.Since(lastUpdate) > 3*time.Second {
-			progress := 0
-			if total > 0 {
-				progress = int((float64(uploaded) / float64(total)) * 100)
+	// Create an io.Pipe to connect the HTTP downloader to the Google Drive uploader in memory
+	pr, pw := io.Pipe()
+
+	errChan := make(chan error, 2)
+	lastUpdate := time.Now()
+
+	// Goroutine 1: Downloader writes to pw
+	go func() {
+		defer pw.Close()
+		_, err := downloader.StreamTransfer(ctx, downloadURL, pw, func(downloaded, total, speed int64) {
+			if fileSize <= 0 && total > 0 {
+				fileSize = total
+				database.UpdateTaskFileSize(taskID, fileSize)
 			}
-			database.UpdateTaskUploadProgress(taskID, progress, speed)
 
-			if msg != nil {
-				eta := calcETA(total-uploaded, speed)
-				elapsed := time.Since(startTime).Round(time.Second).String()
+			// We use the downloader callback for the UI updates since that represents exactly what is entering the pipe
+			if time.Since(lastUpdate) > 3*time.Second {
+				progress := 0
+				if total > 0 {
+					progress = int((float64(downloaded) / float64(total)) * 100)
+				}
+				database.UpdateTaskDownloadProgress(taskID, progress, speed)
+				database.UpdateTaskUploadProgress(taskID, progress, speed) // Keep them synced in UI
 
-				text := fmt.Sprintf("☁️ <b>Bridge Uploading</b> [#%d]\n\n"+
-					"📄 <code>%s</code>\n"+
-					"<code>[%s] %d%%</code>\n\n"+
-					"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
-					"<i>/cancel %d to abort</i>",
-					taskID, fileName,
-					progressBar(progress), progress,
-					formatSize(speed), eta, elapsed, taskID)
+				if msg != nil {
+					eta := calcETA(total-downloaded, speed)
+					if total <= 0 {
+						eta = "unknown"
+					}
+					elapsed := time.Since(startTime).Round(time.Second).String()
 
-				bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+					text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
+						"📄 <code>%s</code>\n"+
+						"<code>[%s] %d%%</code>\n\n"+
+						"⚡ %s/s  •  ⏳ %s  •  ⏱ %s\n\n"+
+						"<i>/cancel %d to abort</i>",
+						taskID, fileName,
+						progressBar(progress), progress,
+						formatSize(speed), eta, elapsed, taskID)
+
+					bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+				}
+				lastUpdate = time.Now()
 			}
-			lastUpdate = time.Now()
+		})
+		if err != nil && err != io.EOF {
+			errChan <- fmt.Errorf("Download error: %v", err)
+		} else {
+			errChan <- nil
 		}
-	})
+	}()
 
-	os.Remove(downloadPath)
+	// Goroutine 2: Uploader reads from pr (Blocking call)
+	var driveLink, driveFileID string
+	var uploadErr error
+	go func() {
+		defer pr.Close()
+		driveLink, driveFileID, uploadErr = uploaderInstance.UploadStream(ctx, pr, fileName, nil)
+		if uploadErr != nil {
+			errChan <- fmt.Errorf("Upload error: %v", uploadErr)
+		} else {
+			errChan <- nil
+		}
+	}()
 
-	if err != nil {
+	// Wait for both pipeline stages to finish
+	err1 := <-errChan
+	err2 := <-errChan
+
+	if err1 != nil || err2 != nil {
 		if ctx.Err() == context.Canceled {
 			return
 		}
+		
+		var finalErrStr string
+		if err1 != nil { finalErrStr += err1.Error() + "\n" }
+		if err2 != nil { finalErrStr += err2.Error() + "\n" }
+
 		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
 		if msg != nil {
-			bh.bot.Edit(msg, "❌ <b>Bridge Upload Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			bh.bot.Edit(msg, "❌ <b>Streaming Failed:</b>\n"+finalErrStr, &tele.SendOptions{ParseMode: tele.ModeHTML})
 		}
 		return
 	}
 
 	// === COMPLETION ===
 	finalElapsed := time.Since(startTime).Round(time.Second).String()
+	database.UpdateTaskDownloadProgress(taskID, 100, 0)
 	database.UpdateTaskUploadProgress(taskID, 100, 0)
 	database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
 
 	if msg != nil {
-		completeText := fmt.Sprintf("✅ <b>Bridge Task #%d Complete!</b>\n\n"+
+		completeText := fmt.Sprintf("✅ <b>Stream Task #%d Complete!</b>\n\n"+
 			"📄 <b>File:</b> <code>%s</code>\n"+
 			"📦 <b>Size:</b> %s\n"+
 			"⏱ <b>Time:</b> %s\n\n"+

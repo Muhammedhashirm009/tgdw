@@ -171,6 +171,56 @@ func (du *DriveUploader) UploadFile(ctx context.Context, filePath string, fileNa
 	return finalFile.WebViewLink, finalFile.Id, nil
 }
 
+// UploadStream uploads from any io.Reader. Perfect for pipe streaming where size isn't strictly known or we don't want to use disk stat.
+func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fileName string, callback UploadProgressCallback) (string, string, error) {
+	// A wrapper to track progress for streams where total size is unknown beforehand (we pass 0 for total if unknown)
+	pr := &progressReader{
+		Reader:         reader,
+		total:          0, // stream might not know total size, that's fine for progress text
+		lastReportTime: time.Now(),
+		callback:       callback,
+	}
+
+	if fileName == "" {
+		fileName = "stream_upload_" + time.Now().Format("20060102150405")
+	}
+
+	folderID, err := du.getOrCreateFolder(defaultFolderName, "")
+	if err != nil {
+		log.Printf("Warning: could not get/create '%s' folder, uploading to root: %v", defaultFolderName, err)
+		folderID = ""
+	}
+
+	f := &drive.File{Name: fileName}
+	if folderID != "" {
+		f.Parents = []string{folderID}
+	}
+
+	// For stream uploading, we just pass the io.Reader to Media(). The Google Drive API client 
+	// handles chunked resumable uploads automatically if it detects an io.Reader that is not an *os.File.
+	res, err := du.client.Files.Create(f).Media(pr).Context(ctx).Do()
+	if err != nil {
+		return "", "", err
+	}
+
+	perm := &drive.Permission{
+		Type: "anyone",
+		Role: "reader",
+	}
+	_, err = du.client.Permissions.Create(res.Id, perm).Do()
+	if err != nil {
+		log.Printf("Warning: file uploaded but failed to set public permission: %v", err)
+	}
+
+	finalFile, err := du.client.Files.Get(res.Id).Fields("webViewLink").Do()
+	if err != nil {
+		fallbackLink := "https://drive.google.com/file/d/" + res.Id + "/view"
+		return fallbackLink, res.Id, nil
+	}
+
+	return finalFile.WebViewLink, finalFile.Id, nil
+}
+
 func (du *DriveUploader) DeleteFile(fileID string) error {
 	return du.client.Files.Delete(fileID).Do()
 }
