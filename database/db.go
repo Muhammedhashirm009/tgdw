@@ -2,7 +2,10 @@ package database
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strconv"
@@ -127,6 +130,27 @@ func createTables() error {
 			level VARCHAR(50) NOT NULL,
 			message TEXT NOT NULL,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS bridge_tokens (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			user_id INT NOT NULL,
+			token_hash VARCHAR(64) NOT NULL,
+			token_prefix VARCHAR(50) NOT NULL,
+			last_used TIMESTAMP NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS bridge_logs (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			user_id INT NOT NULL,
+			url TEXT NOT NULL,
+			source_site VARCHAR(255) DEFAULT '',
+			filename VARCHAR(255) DEFAULT '',
+			file_size VARCHAR(50) DEFAULT '',
+			status VARCHAR(50) DEFAULT 'sent',
+			task_id INT DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
 	}
 
@@ -374,4 +398,100 @@ func GetExpiredTasks(hours int) ([]Task, error) {
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
+}
+
+// ===== Bridge Token Functions =====
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+// GenerateBridgeToken creates a new bridge token for a user, revoking any existing one.
+// Returns the raw token (shown once) and errors.
+func GenerateBridgeToken(userID int) (string, error) {
+	// Delete any existing tokens for this user
+	DB.Exec("DELETE FROM bridge_tokens WHERE user_id = ?", userID)
+
+	// Generate random bytes for the token
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	rawToken := fmt.Sprintf("gdbridge_%d_%s", userID, hex.EncodeToString(b))
+	tokenHash := hashToken(rawToken)
+	tokenPrefix := rawToken[:20] + "..."
+
+	_, err := DB.Exec("INSERT INTO bridge_tokens (user_id, token_hash, token_prefix) VALUES (?, ?, ?)",
+		userID, tokenHash, tokenPrefix)
+	if err != nil {
+		return "", err
+	}
+
+	return rawToken, nil
+}
+
+// ValidateBridgeToken validates a raw token and returns the user ID if valid.
+func ValidateBridgeToken(rawToken string) (int, error) {
+	tokenHash := hashToken(rawToken)
+
+	var userID int
+	err := DB.QueryRow("SELECT user_id FROM bridge_tokens WHERE token_hash = ?", tokenHash).Scan(&userID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid token")
+	}
+
+	// Update last_used timestamp
+	DB.Exec("UPDATE bridge_tokens SET last_used = NOW() WHERE token_hash = ?", tokenHash)
+
+	return userID, nil
+}
+
+// RevokeBridgeToken deletes all bridge tokens for a user.
+func RevokeBridgeToken(userID int) error {
+	_, err := DB.Exec("DELETE FROM bridge_tokens WHERE user_id = ?", userID)
+	return err
+}
+
+// GetBridgeTokenStatus returns the bridge token info for a user (without the hash).
+func GetBridgeTokenStatus(userID int) (*BridgeToken, error) {
+	var bt BridgeToken
+	var lastUsed sql.NullTime
+	err := DB.QueryRow("SELECT id, user_id, token_prefix, last_used, created_at FROM bridge_tokens WHERE user_id = ? LIMIT 1", userID).Scan(
+		&bt.ID, &bt.UserID, &bt.TokenPrefix, &lastUsed, &bt.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if lastUsed.Valid {
+		bt.LastUsed = &lastUsed.Time
+	}
+	return &bt, nil
+}
+
+// LogBridgeRequest logs a bridge link request.
+func LogBridgeRequest(userID int, url, sourceSite, filename, fileSize, status string, taskID int) error {
+	_, err := DB.Exec("INSERT INTO bridge_logs (user_id, url, source_site, filename, file_size, status, task_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		userID, url, sourceSite, filename, fileSize, status, taskID)
+	return err
+}
+
+// GetBridgeLogs returns the most recent bridge logs for a user.
+func GetBridgeLogs(userID int, limit int) ([]BridgeLog, error) {
+	rows, err := DB.Query("SELECT id, user_id, url, IFNULL(source_site, ''), IFNULL(filename, ''), IFNULL(file_size, ''), IFNULL(status, 'sent'), IFNULL(task_id, 0), created_at FROM bridge_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?", userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []BridgeLog
+	for rows.Next() {
+		var bl BridgeLog
+		err := rows.Scan(&bl.ID, &bl.UserID, &bl.URL, &bl.SourceSite, &bl.Filename, &bl.FileSize, &bl.Status, &bl.TaskID, &bl.CreatedAt)
+		if err != nil {
+			log.Printf("Error scanning bridge log: %v", err)
+			continue
+		}
+		logs = append(logs, bl)
+	}
+	return logs, nil
 }

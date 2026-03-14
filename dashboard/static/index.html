@@ -22,6 +22,7 @@
             <nav class="menu">
                 <a href="#" class="active" data-view="overview">Dashboard</a>
                 <a href="#" data-view="tasks">Task Manager</a>
+                <a href="#" data-view="extension">Extension</a>
                 <a href="#" data-view="settings">Settings</a>
             </nav>
             <div style="margin-top: auto; padding: 20px;">
@@ -90,6 +91,69 @@
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <div id="extension-view" class="view">
+                    <h2>🔌 Extension Setup</h2>
+                    <p style="color: var(--text-secondary); margin-bottom: 24px;">Connect the GDriveBridge Chrome Extension to intercept downloads and send them to your bot.</p>
+
+                    <!-- Token Management -->
+                    <div class="ext-card">
+                        <h3>🔐 API Token</h3>
+                        <p id="ext-token-status" class="ext-status">Checking...</p>
+                        
+                        <div id="ext-token-display" class="ext-token-box" style="display: none;">
+                            <code id="ext-token-value">••••••••••••••••••••</code>
+                            <button id="ext-copy-token" class="btn ext-copy-btn" title="Copy token">
+                                📋 Copy
+                            </button>
+                        </div>
+
+                        <div class="ext-actions">
+                            <button id="ext-generate-btn" class="btn btn-primary">Generate Token</button>
+                            <button id="ext-revoke-btn" class="btn btn-danger" style="display: none;">Revoke Token</button>
+                        </div>
+
+                        <div id="ext-token-meta" style="display: none; margin-top: 12px; font-size: 0.8rem; color: var(--text-secondary);">
+                            <span id="ext-created"></span> · <span id="ext-last-used"></span>
+                        </div>
+                    </div>
+
+                    <!-- Setup Instructions -->
+                    <div class="ext-card" style="margin-top: 16px;">
+                        <h3>📋 Setup Instructions</h3>
+                        <ol class="ext-steps">
+                            <li>Download or clone the <code>chrome-extension</code> folder from the project repo</li>
+                            <li>Open Chrome → <code>chrome://extensions</code></li>
+                            <li>Enable <strong>Developer Mode</strong> (top-right toggle)</li>
+                            <li>Click <strong>"Load unpacked"</strong> → select the <code>chrome-extension</code> folder</li>
+                            <li>Click the extension icon → Open <strong>Options</strong></li>
+                            <li>Paste your <strong>Dashboard URL</strong> and <strong>API Token</strong> from above</li>
+                            <li>Click <strong>Save</strong> — you should see a green "Connected ✓" status</li>
+                        </ol>
+                    </div>
+
+                    <!-- Activity Log -->
+                    <div class="ext-card" style="margin-top: 16px;">
+                        <h3>📊 Recent Activity</h3>
+                        <div class="table-container" style="border: none;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Time</th>
+                                        <th>File</th>
+                                        <th>Source</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ext-logs-body">
+                                    <tr>
+                                        <td colspan="4" class="empty-state">No bridge activity yet.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 

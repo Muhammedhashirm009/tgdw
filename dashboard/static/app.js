@@ -336,13 +336,156 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     });
 
+    // ===== Extension Tab Logic =====
+    let currentRawToken = null; // only set right after generation
+
+    function loadExtensionData() {
+        fetch('/api/token/status')
+            .then(res => {
+                if (res.status === 401) window.location.href = 'login.html';
+                return res.json();
+            })
+            .then(data => {
+                const statusEl = document.getElementById('ext-token-status');
+                const tokenDisplay = document.getElementById('ext-token-display');
+                const tokenValue = document.getElementById('ext-token-value');
+                const generateBtn = document.getElementById('ext-generate-btn');
+                const revokeBtn = document.getElementById('ext-revoke-btn');
+                const metaEl = document.getElementById('ext-token-meta');
+
+                if (data.has_token) {
+                    statusEl.textContent = '✅ Token is active.';
+                    statusEl.style.color = 'var(--success-color)';
+                    tokenDisplay.style.display = 'flex';
+                    
+                    // Show raw token if we just generated it, otherwise show prefix
+                    if (currentRawToken) {
+                        tokenValue.textContent = currentRawToken;
+                    } else {
+                        tokenValue.textContent = data.token_prefix;
+                    }
+                    
+                    generateBtn.textContent = 'Regenerate Token';
+                    revokeBtn.style.display = 'inline-block';
+
+                    // Show meta info
+                    metaEl.style.display = 'block';
+                    document.getElementById('ext-created').textContent = 'Created: ' + new Date(data.created_at).toLocaleDateString();
+                    document.getElementById('ext-last-used').textContent = data.last_used ? 'Last used: ' + new Date(data.last_used).toLocaleString() : 'Never used';
+                } else {
+                    statusEl.textContent = '⚠️ No token generated yet.';
+                    statusEl.style.color = 'var(--text-secondary)';
+                    tokenDisplay.style.display = 'none';
+                    generateBtn.textContent = 'Generate Token';
+                    revokeBtn.style.display = 'none';
+                    metaEl.style.display = 'none';
+                    currentRawToken = null;
+                }
+
+                // Render bridge logs
+                const logsBody = document.getElementById('ext-logs-body');
+                if (data.logs && data.logs.length > 0) {
+                    let html = '';
+                    data.logs.forEach(log => {
+                        const time = new Date(log.created_at).toLocaleString();
+                        const statusBadge = log.status === 'sent' 
+                            ? '<span class="status-badge status-completed">Sent</span>'
+                            : '<span class="status-badge status-failed">Failed</span>';
+                        html += `
+                            <tr>
+                                <td style="font-size: 0.8rem;">${time}</td>
+                                <td><code style="font-size: 0.8rem;">${log.filename || 'Unknown'}</code></td>
+                                <td style="font-size: 0.8rem;">${log.source_site || '-'}</td>
+                                <td>${statusBadge}</td>
+                            </tr>
+                        `;
+                    });
+                    logsBody.innerHTML = html;
+                } else {
+                    logsBody.innerHTML = '<tr><td colspan="4" class="empty-state">No bridge activity yet.</td></tr>';
+                }
+            })
+            .catch(console.error);
+    }
+
+    // Generate token
+    document.getElementById('ext-generate-btn').addEventListener('click', () => {
+        const btn = document.getElementById('ext-generate-btn');
+        const isRegenerate = btn.textContent.includes('Regenerate');
+        
+        if (isRegenerate && !confirm('This will revoke your current token. Any connected extensions will need the new token. Continue?')) {
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Generating...';
+
+        fetch('/api/token/generate', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    currentRawToken = data.token;
+                    loadExtensionData();
+                    alert('⚠️ Copy your token now! It will not be shown again.\n\n' + data.token);
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to generate token'));
+                }
+            })
+            .catch(err => alert('Network error generating token.'))
+            .finally(() => {
+                btn.disabled = false;
+            });
+    });
+
+    // Revoke token
+    document.getElementById('ext-revoke-btn').addEventListener('click', () => {
+        if (!confirm('Revoke your token? This will disconnect any extensions using it.')) return;
+
+        fetch('/api/token/revoke', { method: 'DELETE' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    currentRawToken = null;
+                    loadExtensionData();
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to revoke token'));
+                }
+            })
+            .catch(err => alert('Network error revoking token.'));
+    });
+
+    // Copy token
+    document.getElementById('ext-copy-token').addEventListener('click', () => {
+        const tokenText = document.getElementById('ext-token-value').textContent;
+        navigator.clipboard.writeText(tokenText).then(() => {
+            const btn = document.getElementById('ext-copy-token');
+            btn.textContent = '✅ Copied!';
+            setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
+        }).catch(() => {
+            // Fallback for non-HTTPS contexts
+            const textarea = document.createElement('textarea');
+            textarea.value = tokenText;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            const btn = document.getElementById('ext-copy-token');
+            btn.textContent = '✅ Copied!';
+            setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
+        });
+    });
+
     // Refresh data every 5 seconds
     setInterval(() => {
         fetchStatus();
         fetchTasks();
     }, 5000);
 
+    // Refresh extension data every 10 seconds
+    setInterval(loadExtensionData, 10000);
+
     fetchStatus();
     fetchTasks();
     loadSettings();
+    loadExtensionData();
 });

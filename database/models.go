@@ -64,3 +64,24 @@ type Log struct {
 	Message   string    `json:"message"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+type BridgeToken struct {
+	ID          int        `json:"id"`
+	UserID      int        `json:"user_id"`
+	TokenPrefix string     `json:"token_prefix"`
+	TokenHash   string     `json:"-"`
+	LastUsed    *time.Time `json:"last_used"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+type BridgeLog struct {
+	ID         int       `json:"id"`
+	UserID     int       `json:"user_id"`
+	URL        string    `json:"url"`
+	SourceSite string    `json:"source_site"`
+	Filename   string    `json:"filename"`
+	FileSize   string    `json:"file_size"`
+	Status     string    `json:"status"`
+	TaskID     int       `json:"task_id"`
+	CreatedAt  time.Time `json:"created_at"`
+}

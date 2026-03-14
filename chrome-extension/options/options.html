@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>GDriveBridge — Settings</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px;
+            min-height: 100vh;
+        }
+
+        .options-container {
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: #94a3b8;
+            font-size: 0.875rem;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .card h3 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.8rem;
+            color: #94a3b8;
+            margin-bottom: 6px;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f8fafc;
+            font-size: 0.875rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus {
+            border-color: #3b82f6;
+        }
+
+        .form-group small {
+            display: block;
+            margin-top: 4px;
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 500;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-test {
+            background: transparent;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            margin-left: 8px;
+        }
+
+        .btn-test:hover {
+            border-color: #3b82f6;
+            color: #3b82f6;
+        }
+
+        .status-msg {
+            margin-top: 12px;
+            font-size: 0.8rem;
+            min-height: 20px;
+        }
+
+        .status-success { color: #10b981; }
+        .status-error { color: #ef4444; }
+
+        .test-result {
+            margin-top: 8px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            font-size: 0.8rem;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="options-container">
+        <h1>🔌 GDriveBridge Settings</h1>
+        <p class="subtitle">Configure your connection to the Dashboard API.</p>
+
+        <div class="card">
+            <h3>🌐 Connection</h3>
+            <div class="form-group">
+                <label for="dashboardUrl">Dashboard URL</label>
+                <input type="url" id="dashboardUrl" placeholder="https://your-dashboard.com">
+                <small>The URL of your Cloud Transfer dashboard (no trailing slash)</small>
+            </div>
+            <div class="form-group">
+                <label for="apiToken">API Token</label>
+                <input type="password" id="apiToken" placeholder="gdbridge_1_a3f9c1d8e2b0...">
+                <small>Generate this from Dashboard → Extension → Generate Token</small>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>⚙️ Behavior</h3>
+            <div class="form-group">
+                <label for="interceptMode">Intercept Mode</label>
+                <select id="interceptMode">
+                    <option value="extensions">File extensions only (.zip, .iso, .exe, etc.)</option>
+                    <option value="all">All downloads</option>
+                </select>
+                <small>Choose which downloads to intercept and send to the bot</small>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary" id="saveBtn">Save Settings</button>
+            <button class="btn btn-test" id="testBtn">🔗 Test Connection</button>
+        </div>
+
+        <p class="status-msg" id="statusMsg"></p>
+
+        <div class="test-result" id="testResult"></div>
+    </div>
+
+    <script src="options.js"></script>
+</body>
+</html>

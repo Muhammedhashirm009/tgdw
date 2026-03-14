@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="popup-container">
+        <div class="popup-header">
+            <img src="../icons/icon48.png" alt="GDriveBridge" class="popup-logo">
+            <h1>GDriveBridge</h1>
+        </div>
+
+        <div class="popup-status" id="statusSection">
+            <div class="status-indicator" id="statusDot"></div>
+            <span id="statusText">Checking...</span>
+        </div>
+
+        <div class="popup-toggle">
+            <label class="switch">
+                <input type="checkbox" id="enableToggle" checked>
+                <span class="slider"></span>
+            </label>
+            <span>Intercept Downloads</span>
+        </div>
+
+        <div class="popup-history">
+            <h3>Recent</h3>
+            <div id="historyList" class="history-list">
+                <p class="empty">No links sent yet</p>
+            </div>
+        </div>
+
+        <div class="popup-footer">
+            <a href="#" id="openOptions">⚙️ Settings</a>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
