@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -8,14 +9,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
+
+// aria2c progress line format: [#gid DOWNLOADED/TOTAL CN:N DL:SPEED]
+// Example: [#abc123 45MiB/134MiB CN:16 DL:12MiB]
+var aria2ProgressRe = regexp.MustCompile(`\[#\w+\s+([\d.]+\w*)\/([\d.]+\w*)\s+CN:\d+\s+DL:([\d.]+\w*)`)
 
 // DownloadAria2c downloads a file using aria2c (multi-connection for maximum speed).
 // Falls back to DownloadHTTP if aria2c is not installed on the system.
 // totalSize can be 0 if unknown — a HEAD request will be attempted to retrieve it.
 func DownloadAria2c(ctx context.Context, url string, destDir string, filename string, totalSize int64, callback ProgressCallback) (string, error) {
-	// Check if aria2c is available on this system
 	aria2cPath, err := exec.LookPath("aria2c")
 	if err != nil {
 		log.Printf("aria2c not found, falling back to HTTP download: %v", err)
@@ -32,12 +39,13 @@ func DownloadAria2c(ctx context.Context, url string, destDir string, filename st
 	}
 
 	destPath := filepath.Join(destDir, filename)
-
-	// Remove any existing partial file so aria2c doesn't get confused
 	os.Remove(destPath)
-	os.Remove(destPath + ".aria2") // aria2c control file
+	os.Remove(destPath + ".aria2")
 
-	// Build aria2c command — 16 connections max for maximum throughput
+	// --file-allocation=none: CRITICAL — prevents sparse pre-allocation which
+	// would make os.Stat() return the full file size before any bytes download.
+	// --show-console-readout + --summary-interval=1: emit progress lines to stdout
+	// so we can parse real downloaded bytes instead of polling the file.
 	args := []string{
 		"--max-connection-per-server=16",
 		"--split=16",
@@ -46,35 +54,76 @@ func DownloadAria2c(ctx context.Context, url string, destDir string, filename st
 		"--retry-wait=2",
 		"--connect-timeout=10",
 		"--timeout=60",
+		"--file-allocation=none",
+		"--show-console-readout=true",
+		"--summary-interval=1",
 		"--dir", destDir,
 		"--out", filename,
 		"--allow-overwrite=true",
 		"--auto-file-renaming=false",
 		"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-		"--quiet=true",
 		url,
 	}
 
 	cmd := exec.CommandContext(ctx, aria2cPath, args...)
 
-	// Capture stderr for error diagnosis
-	stderrPipe, _ := cmd.StderrPipe()
+	// Capture stdout for progress parsing (aria2c writes progress to stdout)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return DownloadHTTP(ctx, url, destDir, filename, callback)
+	}
 
 	if err := cmd.Start(); err != nil {
 		log.Printf("aria2c failed to start, falling back to HTTP: %v", err)
 		return DownloadHTTP(ctx, url, destDir, filename, callback)
 	}
 
-	// Monitor download progress by polling the output file size
+	type progressUpdate struct {
+		downloaded int64
+		total      int64
+		speed      int64
+	}
+	progressCh := make(chan progressUpdate, 32)
+
+	// Parse aria2c's progress output line by line
+	go func() {
+		defer close(progressCh)
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.Contains(line, "DL:") {
+				continue
+			}
+			m := aria2ProgressRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			downloaded := parseAria2Size(m[1])
+			parsedTotal := parseAria2Size(m[2])
+			speed := parseAria2Size(m[3])
+
+			// Use the known total if aria2c reports 0 (server didn't send Content-Length)
+			if parsedTotal <= 0 && totalSize > 0 {
+				parsedTotal = totalSize
+			}
+
+			if downloaded > 0 || speed > 0 {
+				select {
+				case progressCh <- progressUpdate{downloaded, parsedTotal, speed}:
+				default:
+				}
+			}
+		}
+	}()
+
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	ticker := time.NewTicker(500 * time.Millisecond) // poll every 500ms for snappy UI
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	startTime := time.Now()
-	var lastSize int64
-	var lastPollTime = startTime
+	var latestProgress progressUpdate
+	var hasNewProgress bool
 
 	for {
 		select {
@@ -84,69 +133,82 @@ func DownloadAria2c(ctx context.Context, url string, destDir string, filename st
 			os.Remove(destPath + ".aria2")
 			return "", ctx.Err()
 
+		case p, ok := <-progressCh:
+			if ok {
+				latestProgress = p
+				hasNewProgress = true
+			}
+
+		case <-ticker.C:
+			if hasNewProgress && callback != nil {
+				callback(latestProgress.downloaded, latestProgress.total, latestProgress.speed)
+				hasNewProgress = false
+			}
+
 		case downloadErr := <-done:
-			// aria2c finished — read any stderr
-			if stderrPipe != nil {
-				stderrBytes := make([]byte, 512)
-				n, _ := stderrPipe.Read(stderrBytes)
-				if n > 0 {
-					log.Printf("aria2c stderr: %s", stderrBytes[:n])
-				}
+			// Drain remaining progress
+			for p := range progressCh {
+				latestProgress = p
 			}
 
 			if downloadErr != nil {
-				log.Printf("aria2c exited with error: %v — falling back to HTTP", downloadErr)
-				// Clean up and fall back
+				log.Printf("aria2c error: %v — falling back to HTTP", downloadErr)
 				os.Remove(destPath)
 				os.Remove(destPath + ".aria2")
 				return DownloadHTTP(ctx, url, destDir, filename, callback)
 			}
 
-			// Final progress callback at 100%
+			// Final callback with accurate disk size
 			if stat, serr := os.Stat(destPath); serr == nil && callback != nil {
 				finalSize := stat.Size()
-				elapsed := time.Since(lastPollTime).Seconds()
-				var finalSpeed int64
-				if elapsed > 0 && finalSize > lastSize {
-					finalSpeed = int64(float64(finalSize-lastSize) / elapsed)
-				}
 				if totalSize <= 0 {
 					totalSize = finalSize
 				}
-				callback(finalSize, totalSize, finalSpeed)
+				callback(finalSize, totalSize, 0)
 			}
 
-			// Clean up the aria2c control file if it still exists
 			os.Remove(destPath + ".aria2")
 			return destPath, nil
-
-		case <-ticker.C:
-			stat, serr := os.Stat(destPath)
-			if serr != nil {
-				continue // file not created yet — aria2c is still connecting
-			}
-
-			currentSize := stat.Size()
-			now := time.Now()
-			elapsed := now.Sub(lastPollTime).Seconds()
-
-			var speed int64
-			if elapsed > 0 && currentSize > lastSize {
-				speed = int64(float64(currentSize-lastSize) / elapsed)
-			}
-
-			if callback != nil && currentSize > 0 {
-				callback(currentSize, totalSize, speed)
-			}
-
-			lastSize = currentSize
-			lastPollTime = now
 		}
 	}
 }
 
+// parseAria2Size converts aria2c human-readable size strings to bytes.
+// Handles: 0B, 100KiB, 45MiB, 1.2GiB, 134MiB, etc.
+func parseAria2Size(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" || s == "0B" {
+		return 0
+	}
+	i := 0
+	for i < len(s) && (s[i] == '.' || (s[i] >= '0' && s[i] <= '9')) {
+		i++
+	}
+	if i == 0 {
+		return 0
+	}
+	numStr := s[:i]
+	unit := strings.ToUpper(strings.TrimSpace(s[i:]))
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0
+	}
+	switch unit {
+	case "B", "":
+		return int64(val)
+	case "K", "KB", "KIB":
+		return int64(val * 1024)
+	case "M", "MB", "MIB":
+		return int64(val * 1024 * 1024)
+	case "G", "GB", "GIB":
+		return int64(val * 1024 * 1024 * 1024)
+	case "T", "TB", "TIB":
+		return int64(val * 1024 * 1024 * 1024 * 1024)
+	}
+	return int64(val)
+}
+
 // fetchContentLength does a HEAD request to get the Content-Length of a URL.
-// Returns 0 if it cannot be determined.
 func fetchContentLength(url string) int64 {
 	client := &http.Client{Timeout: 8 * time.Second}
 	req, err := http.NewRequest("HEAD", url, nil)
@@ -180,7 +242,6 @@ func FormatDownloadMethod() string {
 }
 
 // InstallAria2c attempts to install aria2c via apt-get (for Debian/Ubuntu systems).
-// This is a best-effort operation and should only be called once at startup.
 func InstallAria2c() {
 	if Aria2cAvailable() {
 		return
@@ -188,13 +249,13 @@ func InstallAria2c() {
 	log.Println("aria2c not found — attempting to install via apt-get...")
 	cmd := exec.Command("apt-get", "install", "-y", "aria2")
 	if err := cmd.Run(); err != nil {
-		log.Printf("Warning: Could not install aria2c automatically: %v. Downloads will use single-connection HTTP.", err)
+		log.Printf("Warning: Could not install aria2c: %v. Downloads will use single-connection HTTP.", err)
 	} else {
 		log.Println("aria2c installed successfully.")
 	}
 }
 
-// bestEffortSize formats a size string showing downloaded vs total
+// BestEffortSizeStr formats downloaded vs total as a readable string.
 func BestEffortSizeStr(downloaded, total int64) string {
 	if total > 0 {
 		return fmt.Sprintf("%s / %s", formatHuman(downloaded), formatHuman(total))
