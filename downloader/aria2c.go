@@ -15,9 +15,11 @@ import (
 	"time"
 )
 
-// aria2c progress line format: [#gid DOWNLOADED/TOTAL CN:N DL:SPEED]
-// Example: [#abc123 45MiB/134MiB CN:16 DL:12MiB]
-var aria2ProgressRe = regexp.MustCompile(`\[#\w+\s+([\d.]+\w*)\/([\d.]+\w*)\s+CN:\d+\s+DL:([\d.]+\w*)`)
+// aria2c progress line format:
+// [#gid DOWNLOADED/TOTAL(N%) CN:N DL:SPEED ETA:T]
+// Example: [#b15d6a 5.4MiB/100MiB(5%) CN:16 DL:3.2MiB ETA:28s]
+// The (N%) token is optional and appears when total is known.
+var aria2ProgressRe = regexp.MustCompile(`\[#\w+\s+([\d.]+\w*)\/([\d.]+\w*)\(?[\d%]*\)?\s+CN:\d+\s+DL:([\d.]+\w*)`)
 
 // DownloadAria2c downloads a file using aria2c (multi-connection for maximum speed).
 // Falls back to DownloadHTTP if aria2c is not installed on the system.

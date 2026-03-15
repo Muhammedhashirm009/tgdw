@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -958,6 +959,10 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 		pr, pw := io.Pipe()
 		errChan := make(chan error, 2)
 
+		// Use atomic for last Telegram edit time to prevent data race between goroutines
+		var lastTgNs int64 // unix nanoseconds, atomic
+		atomic.StoreInt64(&lastTgNs, time.Now().Add(-10*time.Second).UnixNano())
+
 		// Goroutine 1: HTTP download → pipe
 		go func() {
 			defer pw.Close()
@@ -969,14 +974,22 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 				progress := 0
 				if fileSize > 0 {
 					progress = int((float64(downloaded) / float64(fileSize)) * 100)
-					if progress > 99 { progress = 99 }
+					if progress > 99 {
+						progress = 99
+					}
 				}
+				// DB updates always run — never throttled
 				database.UpdateTaskDownloadProgress(taskID, progress, speed)
 				database.UpdateTaskUploadProgress(taskID, progress, speed)
-				if time.Since(lastTelegramUpdate) >= 4*time.Second && msg != nil {
-					lastTelegramUpdate = time.Now()
+
+				// Telegram edits are throttled to 4s using atomic timestamp
+				now := time.Now().UnixNano()
+				last := atomic.LoadInt64(&lastTgNs)
+				if now-last >= int64(4*time.Second) && atomic.CompareAndSwapInt64(&lastTgNs, last, now) && msg != nil {
 					eta := calcETA(fileSize-downloaded, speed)
-					if fileSize <= 0 { eta = "unknown" }
+					if fileSize <= 0 {
+						eta = "unknown"
+					}
 					elapsed := time.Since(startTime).Round(time.Second).String()
 					sizeStr := downloader.BestEffortSizeStr(downloaded, fileSize)
 					text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
