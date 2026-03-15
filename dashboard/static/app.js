@@ -83,12 +83,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderTaskStatusBadge(status) {
         let className = "status-badge ";
         switch (status) {
-            case "Completed": className += "status-completed"; break;
-            case "Failed": className += "status-failed"; break;
-            case "Pending": className += "status-pending"; break;
-            case "Downloading": className += "status-downloading"; break;
-            case "Uploading": className += "status-uploading"; break;
-            default: className += "status-default"; break;
+            case "Completed":          className += "status-completed"; break;
+            case "Failed":             className += "status-failed"; break;
+            case "Pending":            className += "status-pending"; break;
+            case "Downloading":        className += "status-downloading"; break;
+            case "Uploading":          className += "status-uploading"; break;
+            case "Streaming to Drive": className += "status-uploading"; break;
+            case "Cancelled":          className += "status-failed"; break;
+            default:                   className += "status-default"; break;
         }
         return `<span class="${className}">${status}</span>`;
     }
@@ -122,23 +124,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 let allTasksHTML = '';
 
                 data.forEach((t, i) => {
-                    // Combine progress into one bar based on status
+                    // Pick progress & speed based on current status
                     let progress = 0;
                     let speed = 0;
-                    if (t.status === 'Downloading') {
-                        progress = t.download_progress;
-                        speed = t.download_speed;
+                    const dlStatuses = ['Downloading', 'Pending'];
+                    const ulStatuses = ['Uploading', 'Streaming to Drive'];
+
+                    if (dlStatuses.includes(t.status)) {
+                        progress = t.download_progress || 0;
+                        speed    = t.download_speed   || 0;
+                    } else if (ulStatuses.includes(t.status)) {
+                        progress = t.upload_progress || 0;
+                        speed    = t.upload_speed    || 0;
+                    } else if (t.status === 'Completed') {
+                        progress = 100;
+                    } else {
+                        // Fallback: show whichever is further along
+                        progress = Math.max(t.download_progress || 0, t.upload_progress || 0);
+                        speed    = (t.download_speed || 0) + (t.upload_speed || 0);
                     }
-                    if (t.status === 'Uploading') {
-                        progress = t.upload_progress;
-                        speed = t.upload_speed;
-                    }
-                    if (t.status === 'Completed') progress = 100;
+
+                    // Clamp to valid range
+                    progress = Math.min(100, Math.max(0, progress));
 
                     let speedText = speed > 0 ? formatBytes(speed) + '/s' : '-';
                     let etaText = '-';
 
-                    if (speed > 0 && progress < 100) {
+                    if (speed > 0 && progress > 0 && progress < 100 && t.file_size > 0) {
                         let bytesRemaining = (t.file_size * (100 - progress)) / 100;
                         let secondsRemaining = Math.round(bytesRemaining / speed);
 
@@ -186,10 +198,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     let linkHtml = t.drive_link ? `<a href="${t.drive_link}" target="_blank" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.75rem;">Drive Link</a>` : '-';
                     
                     let actionsHtml = "";
-                    if (t.status === 'Downloading' || t.status === 'Uploading') {
+                    const activeStatuses = ['Downloading', 'Uploading', 'Streaming to Drive', 'Pending'];
+                    if (activeStatuses.includes(t.status)) {
                         actionsHtml += `<button class="btn btn-danger" style="padding: 4px 8px; font-size: 0.75rem;" onclick="cancelTask(${t.id})">Cancel</button>`;
-                    } else if (t.status === 'Completed' || t.status === 'Cancelled') {
-                        actionsHtml += `<span style="font-size: 0.75rem; color: var(--text-secondary);">${t.elapsed_time || ''}</span>`;
+                    } else if (t.status === 'Completed' || t.status === 'Cancelled' || t.status === 'Failed') {
+                        actionsHtml += `<span style="font-size: 0.75rem; color: var(--text-secondary);">${t.elapsed_time || '-'}</span>`;
                     }
 
                     allTasksHTML += `
