@@ -22,7 +22,7 @@ type Server struct {
 	addr         string
 	sessions     sync.Map // Map[token]username
 	rateLimits   sync.Map // Map[userID][]time.Time for rate limiting
-	OnBridgeTask func(taskID int, url string, filename string, fileSize int64, adminID int64) error
+	OnBridgeTask func(taskID int, url string, filename string, fileSize int64, adminID int64, bridgeMode string) error
 }
 
 func generateSessionToken() string {
@@ -491,7 +491,8 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 		Filename      string `json:"filename"`
 		FileSize      string `json:"file_size"`
 		FileSizeBytes int64  `json:"file_size_bytes"`
-		Test          bool   `json:"test"` // BUG FIX: when true, validate token only — no DB task created
+		Test          bool   `json:"test"`
+		BridgeMode    string `json:"bridge_mode"` // "aria2c" or "stream" (default: "aria2c")
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error": "Invalid JSON body"}`, http.StatusBadRequest)
@@ -562,8 +563,12 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger the bot orchestrator to start downloading!
 	if s.OnBridgeTask != nil {
-		// Pass the numeric file size so the bot can use it directly without a HEAD request
-		s.OnBridgeTask(taskID, req.URL, req.Filename, req.FileSizeBytes, chatID)
+		// Default to aria2c if extension didn't specify a mode
+		mode := req.BridgeMode
+		if mode == "" {
+			mode = "aria2c"
+		}
+		s.OnBridgeTask(taskID, req.URL, req.Filename, req.FileSizeBytes, chatID, mode)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

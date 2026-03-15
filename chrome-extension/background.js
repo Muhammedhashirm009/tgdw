@@ -45,13 +45,13 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     chrome.notifications.create(notifId, {
         type: 'basic',
         iconUrl: 'icons/icon128.png',
-        title: '🔌 GDriveBridge — Download Detected',
-        message: `${fileLabel}${sizeLabel}\n\nSend this to Google Drive via the bot, or let Chrome download it normally?`,
+        title: '🔌 GDriveBridge — How to handle this download?',
+        message: `${fileLabel}${sizeLabel}\n\nChoose how to send this to your bot, or dismiss to let Chrome download it normally.`,
         priority: 2,
-        requireInteraction: true,  // stay visible until the user dismisses / clicks
+        requireInteraction: true,
         buttons: [
-            { title: '🚀 Bridge to Drive' },
-            { title: '⬇️  Download Normally' }
+            { title: '⚡ aria2c  (Fast, 16x connections)' },
+            { title: '🌊 Stream  (Direct to Drive, no disk)' }
         ]
     });
 
@@ -73,8 +73,11 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) =>
     pendingDownloads.delete(notifId);
     chrome.notifications.clear(notifId);
 
-    if (buttonIndex === 0) {
-        // ── "🚀 Bridge to Drive" ────────────────────────────────────────────
+    if (buttonIndex === 0 || buttonIndex === 1) {
+        // ── "⚡ aria2c" (0) or "🌊 Stream" (1) ─────────────────────────────
+        const bridgeMode = buttonIndex === 0 ? 'aria2c' : 'stream';
+        const modeLabel  = buttonIndex === 0 ? '⚡ aria2c' : '🌊 Streaming';
+
         // Cancel the browser download and forward to the dashboard
         try {
             await chrome.downloads.cancel(downloadItem.id);
@@ -89,13 +92,14 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) =>
                 source_site: extractDomain(downloadItem.referrer || url),
                 filename: filename,
                 file_size: downloadItem.totalBytes > 0 ? formatBytes(downloadItem.totalBytes) : 'Unknown',
-                file_size_bytes: downloadItem.totalBytes > 0 ? downloadItem.totalBytes : 0
+                file_size_bytes: downloadItem.totalBytes > 0 ? downloadItem.totalBytes : 0,
+                bridge_mode: bridgeMode
             });
 
             if (result.success) {
                 showNotification(
-                    '✅ Bridged to Google Drive',
-                    `${filename}\nTask #${result.task_id} queued in the bot.`
+                    `✅ Bridged — ${modeLabel}`,
+                    `${filename}\nTask #${result.task_id} queued.`
                 );
                 addToHistory({
                     url, filename,
@@ -107,7 +111,6 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) =>
                 // Bridge failed — resume the browser download as fallback
                 showNotification('❌ Bridge Failed', (result.error || 'Unknown error') + '\nResuming normal download…');
                 chrome.downloads.resume(downloadItem.id).catch(() => {
-                    // Already cancelled — re-trigger download from original URL
                     chrome.downloads.download({ url });
                 });
             }
@@ -119,15 +122,6 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) =>
             });
         }
 
-    } else {
-        // ── "⬇️ Download Normally" ──────────────────────────────────────────
-        // Just resume the paused download
-        try {
-            await chrome.downloads.resume(downloadItem.id);
-        } catch (e) {
-            // Download state may have changed — re-trigger it
-            chrome.downloads.download({ url });
-        }
     }
 });
 

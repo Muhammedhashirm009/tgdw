@@ -850,18 +850,28 @@ func calcETA(remainingBytes, speed int64) string {
 
 // ===== Bridge Extension Logic =====
 
-func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName string, initialSize int64, chatID int64) {
+func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName string, initialSize int64, chatID int64, bridgeMode string) {
+	// Default to aria2c if not specified
+	if bridgeMode == "" {
+		bridgeMode = "aria2c"
+	}
+
 	// Let's send a starting message to Telegram if admin is configured
 	var msg *tele.Message
 	if chatID > 0 {
 		chat := &tele.Chat{ID: chatID}
-		dlMethod := downloader.FormatDownloadMethod()
+		var modeLabel string
+		if bridgeMode == "stream" {
+			modeLabel = "🌊 Stream (no disk)"
+		} else {
+			modeLabel = downloader.FormatDownloadMethod()
+		}
 		startText := fmt.Sprintf("🔌 <b>New Extension Download</b>\n\n"+
 			"📄 <b>Name:</b> <code>%s</code>\n"+
 			"📦 <b>Size:</b> %s\n"+
 			"🚀 <b>Engine:</b> %s\n"+
 			"⏳ <b>Status:</b> Connecting...",
-			fileName, formatSize(initialSize), dlMethod)
+			fileName, formatSize(initialSize), modeLabel)
 
 		m, err := bh.bot.Send(chat, startText, &tele.SendOptions{ParseMode: tele.ModeHTML})
 		if err == nil {
@@ -897,9 +907,143 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 
 	fileSize := initialSize
 	startTime := time.Now()
-	dlMethod := downloader.FormatDownloadMethod()
 
-	// === PHASE 1: DOWNLOAD VIA ARIA2C (or HTTP fallback) ===
+	// modeLabel for display (set once, used throughout)
+	var modeLabel string
+	if bridgeMode == "stream" {
+		modeLabel = "🌊 Stream (no disk)"
+	} else {
+		modeLabel = downloader.FormatDownloadMethod()
+	}
+
+	// Update size in DB if we know it
+	if fileSize > 0 {
+		database.UpdateTaskFileSize(taskID, fileSize)
+	}
+
+	lastTelegramUpdate := time.Now().Add(-10 * time.Second) // fire first update immediately
+
+	var downloadPath string // only used for aria2c mode
+
+	if bridgeMode == "stream" {
+		// =========================================================
+		// STREAM MODE: pipe HTTP directly to Google Drive (no disk)
+		// =========================================================
+		database.UpdateTaskStatus(taskID, "Streaming to Drive", "", "", "")
+
+		if msg != nil {
+			bh.bot.Edit(msg, fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
+				"📄 <code>%s</code>\n"+
+				"<code>[%s] 0%%</code>\n\n"+
+				"⏳ Connecting...\n\n"+
+				"<i>/cancel %d to abort</i>",
+				taskID, fileName, progressBar(0), taskID), &tele.SendOptions{ParseMode: tele.ModeHTML})
+		}
+
+		token := &oauth2.Token{
+			AccessToken:  settings.AccessToken,
+			RefreshToken: settings.RefreshToken,
+			Expiry:       settings.TokenExpiry,
+			TokenType:    "Bearer",
+		}
+		uploaderInstance, err := uploader.NewDriveUploader(context.Background(), token, settings.GoogleClientID, settings.GoogleClientSecret)
+		if err != nil {
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			if msg != nil {
+				bh.bot.Edit(msg, "❌ <b>Drive Setup Failed:</b> "+err.Error(), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+			return
+		}
+
+		pr, pw := io.Pipe()
+		errChan := make(chan error, 2)
+
+		// Goroutine 1: HTTP download → pipe
+		go func() {
+			defer pw.Close()
+			_, streamErr := downloader.StreamTransfer(ctx, downloadURL, pw, func(downloaded, total, speed int64) {
+				if total > 0 && fileSize <= 0 {
+					fileSize = total
+					database.UpdateTaskFileSize(taskID, fileSize)
+				}
+				progress := 0
+				if fileSize > 0 {
+					progress = int((float64(downloaded) / float64(fileSize)) * 100)
+					if progress > 99 { progress = 99 }
+				}
+				database.UpdateTaskDownloadProgress(taskID, progress, speed)
+				database.UpdateTaskUploadProgress(taskID, progress, speed)
+				if time.Since(lastTelegramUpdate) >= 4*time.Second && msg != nil {
+					lastTelegramUpdate = time.Now()
+					eta := calcETA(fileSize-downloaded, speed)
+					if fileSize <= 0 { eta = "unknown" }
+					elapsed := time.Since(startTime).Round(time.Second).String()
+					sizeStr := downloader.BestEffortSizeStr(downloaded, fileSize)
+					text := fmt.Sprintf("🌊 <b>Streaming to Drive</b> [#%d]\n\n"+
+						"📄 <code>%s</code>\n"+
+						"<code>[%s] %d%%</code>\n\n"+
+						"⚡ %s/s  •  📦 %s  •  ⏳ %s  •  ⏱ %s\n\n"+
+						"<i>/cancel %d to abort</i>",
+						taskID, fileName, progressBar(progress), progress,
+						formatSize(speed), sizeStr, eta, elapsed, taskID)
+					bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
+				}
+			})
+			if streamErr != nil && streamErr != io.EOF {
+				errChan <- fmt.Errorf("download error: %v", streamErr)
+			} else {
+				errChan <- nil
+			}
+		}()
+
+		// Goroutine 2: pipe → Google Drive upload
+		var driveLink, driveFileID string
+		var uploadErr error
+		go func() {
+			defer pr.Close()
+			driveLink, driveFileID, uploadErr = uploaderInstance.UploadStream(ctx, pr, fileName, nil)
+			if uploadErr != nil {
+				errChan <- fmt.Errorf("upload error: %v", uploadErr)
+			} else {
+				errChan <- nil
+			}
+		}()
+
+		err1 := <-errChan
+		err2 := <-errChan
+		if err1 != nil || err2 != nil {
+			if ctx.Err() == context.Canceled { return }
+			database.UpdateTaskStatus(taskID, "Failed", "", "", "")
+			if msg != nil {
+				bh.bot.Edit(msg, "❌ <b>Stream Failed:</b> "+fmt.Sprint(err1, err2), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+			return
+		}
+
+		finalElapsed := time.Since(startTime).Round(time.Second).String()
+		database.UpdateTaskDownloadProgress(taskID, 100, 0)
+		database.UpdateTaskUploadProgress(taskID, 100, 0)
+		database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
+		if msg != nil {
+			completeText := fmt.Sprintf("✅ <b>Bridge Task #%d Complete!</b>\n\n"+
+				"📄 <b>File:</b> <code>%s</code>\n"+
+				"📦 <b>Size:</b> %s\n"+
+				"🚀 <b>Mode:</b> %s\n"+
+				"⏱ <b>Time:</b> %s\n\n"+
+				"<code>[████████████████████] 100%%</code>",
+				taskID, fileName, formatSize(fileSize), modeLabel, finalElapsed)
+			if driveLink != "" {
+				bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML}, driveButton(driveLink))
+			} else {
+				bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML})
+			}
+		}
+		return // stream mode done
+	}
+
+	// =========================================================
+	// ARIA2C MODE (default): download to disk, then upload
+	// =========================================================
 	downloadDir := settings.DownloadDirectory
 	if downloadDir == "" {
 		downloadDir = "/data/downloads"
@@ -911,54 +1055,35 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 			"<code>[%s] 0%%</code>\n\n"+
 			"🚀 <b>Engine:</b> %s • ⏳ Connecting...\n\n"+
 			"<i>/cancel %d to abort</i>",
-			taskID, fileName, progressBar(0), dlMethod, taskID), &tele.SendOptions{ParseMode: tele.ModeHTML})
+			taskID, fileName, progressBar(0), modeLabel, taskID), &tele.SendOptions{ParseMode: tele.ModeHTML})
 	}
 
-	// Update size in DB if we didn't know it yet
-	if fileSize > 0 {
-		database.UpdateTaskFileSize(taskID, fileSize)
-	}
-
-	lastTelegramUpdate := time.Now().Add(-10 * time.Second) // fire first update immediately
-
-	downloadPath, dlErr := downloader.DownloadAria2c(ctx, downloadURL, downloadDir, fileName, fileSize, func(downloaded, total, speed int64) {
-		// Update known total if it came from the HEAD request inside aria2c
+	var dlErr error
+	downloadPath, dlErr = downloader.DownloadAria2c(ctx, downloadURL, downloadDir, fileName, fileSize, func(downloaded, total, speed int64) {
 		if total > 0 && fileSize <= 0 {
 			fileSize = total
 			database.UpdateTaskFileSize(taskID, fileSize)
 		}
-
 		progress := 0
 		if fileSize > 0 && downloaded > 0 {
 			progress = int((float64(downloaded) / float64(fileSize)) * 100)
-			if progress > 99 {
-				progress = 99 // hold at 99% until fully done
-			}
+			if progress > 99 { progress = 99 }
 		}
-
 		database.UpdateTaskDownloadProgress(taskID, progress, speed)
-
-		// Throttle Telegram edits to every 4 seconds to stay under rate limits
 		if time.Since(lastTelegramUpdate) >= 4*time.Second && msg != nil {
 			lastTelegramUpdate = time.Now()
 			eta := calcETA(fileSize-downloaded, speed)
-			if fileSize <= 0 {
-				eta = "unknown"
-			}
+			if fileSize <= 0 { eta = "unknown" }
 			elapsed := time.Since(startTime).Round(time.Second).String()
 			sizeStr := downloader.BestEffortSizeStr(downloaded, fileSize)
-
 			text := fmt.Sprintf("📥 <b>Downloading</b> [#%d]\n\n"+
 				"📄 <code>%s</code>\n"+
 				"<code>[%s] %d%%</code>\n\n"+
 				"⚡ %s/s  •  📦 %s  •  ⏳ %s  •  ⏱ %s\n"+
 				"🚀 %s\n\n"+
 				"<i>/cancel %d to abort</i>",
-				taskID, fileName,
-				progressBar(progress), progress,
-				formatSize(speed), sizeStr, eta, elapsed,
-				dlMethod, taskID)
-
+				taskID, fileName, progressBar(progress), progress,
+				formatSize(speed), sizeStr, eta, elapsed, modeLabel, taskID)
 			bh.bot.Edit(msg, text, &tele.SendOptions{ParseMode: tele.ModeHTML})
 		}
 	})
@@ -1068,7 +1193,7 @@ func (bh *BotHandler) processBridgeTask(taskID int, downloadURL string, fileName
 			"🚀 <b>Engine:</b> %s\n"+
 			"⏱ <b>Time:</b> %s\n\n"+
 			"<code>[████████████████████] 100%%</code>",
-			taskID, fileName, formatSize(fileSize), dlMethod, finalElapsed)
+			taskID, fileName, formatSize(fileSize), modeLabel, finalElapsed)
 
 		if driveLink != "" {
 			bh.bot.Edit(msg, completeText, &tele.SendOptions{ParseMode: tele.ModeHTML}, driveButton(driveLink))

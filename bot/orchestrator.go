@@ -60,7 +60,7 @@ func (bh *BotHandler) Stop() {
 }
 
 // HandleBridgeTask accepts a task from the dashboard extension bridge
-func (bo *BotOrchestrator) HandleBridgeTask(taskID int, url string, filename string, fileSize int64, telegramChatID int64) error {
+func (bo *BotOrchestrator) HandleBridgeTask(taskID int, url string, filename string, fileSize int64, telegramChatID int64, bridgeMode string) error {
 	bo.mu.Lock()
 	bh := bo.botHandler
 	bo.mu.Unlock()
@@ -70,6 +70,6 @@ func (bo *BotOrchestrator) HandleBridgeTask(taskID int, url string, filename str
 		return nil // We don't error out the HTTP request, just log it. The task stays "Pending".
 	}
 
-	go bh.processBridgeTask(taskID, url, filename, fileSize, telegramChatID)
+	go bh.processBridgeTask(taskID, url, filename, fileSize, telegramChatID, bridgeMode)
 	return nil
 }
