@@ -18,7 +18,7 @@ FROM aiogram/telegram-bot-api:latest
 
 USER root
 # Install necessary certificates for Go
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata aria2
 
 WORKDIR /app
 

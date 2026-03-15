@@ -486,13 +486,25 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req struct {
-		URL        string `json:"url"`
-		SourceSite string `json:"source_site"`
-		Filename   string `json:"filename"`
-		FileSize   string `json:"file_size"`
+		URL           string `json:"url"`
+		SourceSite    string `json:"source_site"`
+		Filename      string `json:"filename"`
+		FileSize      string `json:"file_size"`
+		FileSizeBytes int64  `json:"file_size_bytes"`
+		Test          bool   `json:"test"` // BUG FIX: when true, validate token only — no DB task created
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error": "Invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// BUG FIX: test-mode — token is valid (already checked above), return success without creating a task
+	if req.Test {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Connection test successful. Token is valid.",
+			"task_id": 0,
+		})
 		return
 	}
 
@@ -518,8 +530,16 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create task in database
-	taskID, err := database.CreateTask(userID, req.Filename, 0, "Bridge Extension")
+	// BUG FIX: check Google Drive config BEFORE creating the task
+	// Old code created the task first, then failed — leaving zombie "Failed" tasks in the DB
+	settings, err := database.GetSettings()
+	if err != nil || settings.AccessToken == "" {
+		http.Error(w, `{"error": "Google Drive not configured. Please connect via Dashboard."}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Create task in database (use numeric file size if provided by extension)
+	taskID, err := database.CreateTask(userID, req.Filename, req.FileSizeBytes, "Bridge Extension")
 	if err != nil {
 		database.LogBridgeRequest(userID, req.URL, req.SourceSite, req.Filename, req.FileSize, "failed", 0)
 		http.Error(w, `{"error": "Failed to create download task"}`, http.StatusInternalServerError)
@@ -530,14 +550,6 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 	database.LogBridgeRequest(userID, req.URL, req.SourceSite, req.Filename, req.FileSize, "sent", taskID)
 
 	log.Printf("Bridge: Received link from extension for user %d: %s (source: %s)", userID, req.URL, req.SourceSite)
-
-	// Get settings and start bot download
-	settings, err := database.GetSettings()
-	if err != nil || settings.AccessToken == "" {
-		database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-		http.Error(w, `{"error": "Google Drive not configured. Please connect via Dashboard."}`, http.StatusServiceUnavailable)
-		return
-	}
 
 	// Get admin telegram IDs to send notification
 	var chatID int64
@@ -550,8 +562,8 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger the bot orchestrator to start downloading!
 	if s.OnBridgeTask != nil {
-		// size is passed as 0 because the bot handles fetching exact size from HEAD request
-		s.OnBridgeTask(taskID, req.URL, req.Filename, 0, chatID)
+		// Pass the numeric file size so the bot can use it directly without a HEAD request
+		s.OnBridgeTask(taskID, req.URL, req.Filename, req.FileSizeBytes, chatID)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

@@ -1,78 +1,183 @@
 // GDriveBridge — Background Service Worker
-// Intercepts downloads and forwards them to the dashboard API
+// Intercepts downloads, pauses them, and asks the user: Bridge or Download Normally?
 
 const INTERCEPT_EXTENSIONS = [
     '.zip', '.rar', '.iso', '.exe', '.7z', '.tar', '.gz', '.tar.gz',
     '.dmg', '.msi', '.deb', '.rpm', '.apk', '.xz', '.bz2',
-    '.bin', '.img', '.torrent'
+    '.bin', '.img', '.torrent', '.mp4', '.mkv', '.avi', '.mov',
+    '.pdf', '.epub', '.mp3', '.flac'
 ];
 
-// Listen for new downloads
+// In-memory store for pending download decisions: notificationId → downloadItem
+const pendingDownloads = new Map();
+
+// ===== Download Interception =====
+
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
     const settings = await chrome.storage.sync.get(['dashboardUrl', 'apiToken', 'enabled', 'interceptMode']);
 
-    // Check if extension is enabled
-    if (settings.enabled === false) return;
+    // Check if extension is enabled (BUG FIX: explicit boolean check)
+    if (!settings.enabled) return;
+
+    // Don't intercept if not configured — no point pausing downloads we can't send
+    if (!settings.dashboardUrl || !settings.apiToken) return;
 
     const url = downloadItem.url || '';
+    // BUG FIX: extractFilename strips query params
     const filename = downloadItem.filename || extractFilename(url);
 
-    // Check if we should intercept this download
     if (!shouldIntercept(url, filename, settings.interceptMode)) return;
 
-    // Send to dashboard
+    // ── PAUSE the browser download first before asking the user ──────────────
     try {
-        const result = await sendToDashboard(settings.dashboardUrl, settings.apiToken, {
-            url: url,
-            source_site: extractDomain(downloadItem.referrer || url),
-            filename: filename,
-            file_size: downloadItem.totalBytes > 0 ? formatBytes(downloadItem.totalBytes) : 'Unknown'
-        });
+        await chrome.downloads.pause(downloadItem.id);
+    } catch (e) {
+        // Download may have already completed in the split second — just skip it
+        console.warn('GDriveBridge: could not pause download, skipping intercept:', e);
+        return;
+    }
 
-        if (result.success) {
-            // Cancel the browser download since bot will handle it
-            chrome.downloads.cancel(downloadItem.id);
-            chrome.downloads.erase({ id: downloadItem.id });
+    // Show a notification with two action buttons
+    const notifId = `gdbridge_${downloadItem.id}_${Date.now()}`;
+    const fileLabel = filename.length > 40 ? filename.slice(0, 38) + '…' : filename;
+    const sizeLabel = downloadItem.totalBytes > 0 ? ` (${formatBytes(downloadItem.totalBytes)})` : '';
 
-            showNotification(
-                '✅ Link Sent to Bot',
-                `${filename}\nTask #${result.task_id} created`
-            );
+    chrome.notifications.create(notifId, {
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: '🔌 GDriveBridge — Download Detected',
+        message: `${fileLabel}${sizeLabel}\n\nSend this to Google Drive via the bot, or let Chrome download it normally?`,
+        priority: 2,
+        requireInteraction: true,  // stay visible until the user dismisses / clicks
+        buttons: [
+            { title: '🚀 Bridge to Drive' },
+            { title: '⬇️  Download Normally' }
+        ]
+    });
 
-            // Store in recent history
-            addToHistory({
-                url, filename,
-                source: extractDomain(downloadItem.referrer || url),
-                taskId: result.task_id,
-                time: new Date().toISOString()
-            });
-        } else {
-            showNotification('❌ Failed to Send', result.error || 'Unknown error');
+    // Store the full context so the button handler can act on it
+    pendingDownloads.set(notifId, {
+        downloadItem,
+        url,
+        filename,
+        settings
+    });
+});
+
+// ===== Notification Button Clicks =====
+
+chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) => {
+    if (!pendingDownloads.has(notifId)) return;
+
+    const { downloadItem, url, filename, settings } = pendingDownloads.get(notifId);
+    pendingDownloads.delete(notifId);
+    chrome.notifications.clear(notifId);
+
+    if (buttonIndex === 0) {
+        // ── "🚀 Bridge to Drive" ────────────────────────────────────────────
+        // Cancel the browser download and forward to the dashboard
+        try {
+            await chrome.downloads.cancel(downloadItem.id);
+            await chrome.downloads.erase({ id: downloadItem.id });
+        } catch (e) {
+            console.warn('GDriveBridge: cancel after bridge choice failed:', e);
         }
-    } catch (err) {
-        console.error('GDriveBridge error:', err);
-        showNotification('❌ Connection Error', 'Could not reach your dashboard. Check Extension Options.');
+
+        try {
+            const result = await sendToDashboard(settings.dashboardUrl, settings.apiToken, {
+                url: url,
+                source_site: extractDomain(downloadItem.referrer || url),
+                filename: filename,
+                file_size: downloadItem.totalBytes > 0 ? formatBytes(downloadItem.totalBytes) : 'Unknown',
+                file_size_bytes: downloadItem.totalBytes > 0 ? downloadItem.totalBytes : 0
+            });
+
+            if (result.success) {
+                showNotification(
+                    '✅ Bridged to Google Drive',
+                    `${filename}\nTask #${result.task_id} queued in the bot.`
+                );
+                addToHistory({
+                    url, filename,
+                    source: extractDomain(downloadItem.referrer || url),
+                    taskId: result.task_id,
+                    time: new Date().toISOString()
+                });
+            } else {
+                // Bridge failed — resume the browser download as fallback
+                showNotification('❌ Bridge Failed', (result.error || 'Unknown error') + '\nResuming normal download…');
+                chrome.downloads.resume(downloadItem.id).catch(() => {
+                    // Already cancelled — re-trigger download from original URL
+                    chrome.downloads.download({ url });
+                });
+            }
+        } catch (err) {
+            console.error('GDriveBridge sendToDashboard error:', err);
+            showNotification('❌ Connection Error', 'Could not reach your dashboard.\nResuming normal download…');
+            chrome.downloads.resume(downloadItem.id).catch(() => {
+                chrome.downloads.download({ url });
+            });
+        }
+
+    } else {
+        // ── "⬇️ Download Normally" ──────────────────────────────────────────
+        // Just resume the paused download
+        try {
+            await chrome.downloads.resume(downloadItem.id);
+        } catch (e) {
+            // Download state may have changed — re-trigger it
+            chrome.downloads.download({ url });
+        }
     }
 });
 
-function shouldIntercept(url, filename, mode) {
-    if (!url || url.startsWith('blob:') || url.startsWith('data:')) return false;
+// ===== Notification Dismissed Without Button Click =====
+// If the user closes the notification without choosing, resume the download
 
-    // In 'all' mode, intercept everything
+chrome.notifications.onClosed.addListener((notifId, byUser) => {
+    if (!pendingDownloads.has(notifId)) return;
+
+    const { downloadItem, url } = pendingDownloads.get(notifId);
+    pendingDownloads.delete(notifId);
+
+    // Resume the paused download since no choice was made
+    chrome.downloads.resume(downloadItem.id).catch(() => {
+        chrome.downloads.download({ url });
+    });
+});
+
+// ===== Detection Logic =====
+
+// BUG FIX: check URL path and filename SEPARATELY using endsWith
+// Old: (url + filename) caused false positives like "refzip" matching ".zip"
+function shouldIntercept(url, filename, mode) {
+    if (!url || url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('chrome-extension:')) return false;
+
     if (mode === 'all') return true;
 
-    // Default: filter by file extension
-    const lowerUrl = (url + filename).toLowerCase();
-    return INTERCEPT_EXTENSIONS.some(ext => lowerUrl.includes(ext));
+    const lowerFilename = filename.toLowerCase();
+    let lowerPath = '';
+    try {
+        lowerPath = new URL(url).pathname.toLowerCase();
+    } catch {
+        lowerPath = url.toLowerCase();
+    }
+
+    return INTERCEPT_EXTENSIONS.some(ext =>
+        lowerFilename.endsWith(ext) || lowerPath.endsWith(ext)
+    );
 }
 
+// BUG FIX: strips query strings and fragments — old version returned "file.zip?token=abc"
 function extractFilename(url) {
     try {
         const pathname = new URL(url).pathname;
         const parts = pathname.split('/');
         return decodeURIComponent(parts[parts.length - 1]) || 'unknown_file';
     } catch {
-        return 'unknown_file';
+        const parts = url.split('/');
+        const segment = parts[parts.length - 1].split('?')[0].split('#')[0];
+        return segment || 'unknown_file';
     }
 }
 
@@ -92,12 +197,12 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// BUG FIX: checks HTTP status before parsing JSON — old version treated 401/500 as success
 async function sendToDashboard(dashboardUrl, token, data) {
     if (!dashboardUrl || !token) {
         throw new Error('Dashboard URL and token not configured');
     }
 
-    // Ensure URL doesn't have trailing slash
     const baseUrl = dashboardUrl.replace(/\/+$/, '');
 
     const response = await fetch(`${baseUrl}/api/bridge/send-link`, {
@@ -108,6 +213,17 @@ async function sendToDashboard(dashboardUrl, token, data) {
         },
         body: JSON.stringify(data)
     });
+
+    if (response.status === 401) {
+        return { success: false, error: 'Invalid API token. Please regenerate from Dashboard → Extension Settings.' };
+    }
+    if (response.status === 429) {
+        return { success: false, error: 'Rate limit exceeded. Try again in a moment.' };
+    }
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        return { success: false, error: `Server error ${response.status}: ${text.slice(0, 100)}` };
+    }
 
     return await response.json();
 }
@@ -125,25 +241,26 @@ function showNotification(title, message) {
 async function addToHistory(entry) {
     const { history = [] } = await chrome.storage.local.get('history');
     history.unshift(entry);
-    // Keep only last 20 entries
     await chrome.storage.local.set({ history: history.slice(0, 20) });
 }
 
-// Handle messages from popup
+// ===== Popup Message Handlers =====
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'getStatus') {
         chrome.storage.sync.get(['dashboardUrl', 'apiToken', 'enabled'], (settings) => {
             sendResponse({
                 configured: !!(settings.dashboardUrl && settings.apiToken),
-                enabled: settings.enabled !== false
+                enabled: settings.enabled === true,
+                pendingCount: pendingDownloads.size
             });
         });
-        return true; // async response
+        return true;
     }
 
     if (msg.type === 'toggleEnabled') {
         chrome.storage.sync.get(['enabled'], (settings) => {
-            const newState = !(settings.enabled !== false);
+            const newState = !(settings.enabled === true);
             chrome.storage.sync.set({ enabled: newState });
             sendResponse({ enabled: newState });
         });
