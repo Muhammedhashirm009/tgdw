@@ -44,6 +44,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/cancel", s.authMiddleware(s.handleTaskCancel))
 	mux.HandleFunc("/api/settings", s.authMiddleware(s.handleSettings))
 	mux.HandleFunc("/api/logout", s.authMiddleware(s.handleLogout))
+	mux.HandleFunc("/api/me", s.authMiddleware(s.handleMe))
 	
 	// Public API routes
 	mux.HandleFunc("/api/login", s.handleLogin)
@@ -63,6 +64,47 @@ func (s *Server) Start() error {
 	
 	log.Printf("Starting Web Dashboard on %s\n", s.addr)
 	return http.ListenAndServe(s.addr, mux)
+}
+
+// getUserFromSession extracts the userID and role from the session cookie
+func (s *Server) getUserFromSession(r *http.Request) (int, string, error) {
+	cookie, err := r.Cookie("auth_token")
+	if err != nil {
+		return 0, "", fmt.Errorf("no auth cookie")
+	}
+	val, ok := s.sessions.Load(cookie.Value)
+	if !ok {
+		return 0, "", fmt.Errorf("invalid session")
+	}
+	userID := val.(int)
+	user, err := database.GetUserByID(userID)
+	if err != nil {
+		return 0, "", fmt.Errorf("user not found")
+	}
+	return user.ID, user.Role, nil
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	userID, _, err := s.getUserFromSession(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	user, err := database.GetUserByID(userID)
+	if err != nil {
+		http.Error(w, `{"error": "User not found"}`, http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"user_id":  user.ID,
+		"username": user.Username,
+		"role":     user.Role,
+	})
 }
 
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -123,8 +165,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
-	tasks, err := database.GetAllTasks()
+
+	userID, role, err := s.getUserFromSession(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var tasks []database.Task
+	if role == "admin" {
+		tasks, err = database.GetAllTasks()
+	} else {
+		tasks, err = database.GetTasksByUserID(userID, 50)
+	}
+
 	if err != nil || tasks == nil {
 		w.Write([]byte(`[]`))
 		return
@@ -161,6 +215,13 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	// Admin-only guard
+	_, role, err := s.getUserFromSession(r)
+	if err != nil || role != "admin" {
+		http.Error(w, `{"error": "Forbidden: admin access required"}`, http.StatusForbidden)
+		return
+	}
+
 	if r.Method == http.MethodGet {
 		settings, err := database.GetSettings()
 		if err != nil {
@@ -176,13 +237,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			IsGoogleConnected: settings.AccessToken != "",
 		}
 
-		// Hide secrets for security in frontend response, unless necessary.
+		// Hide secrets for security in frontend response
 		response.GoogleClientSecret = ""
-		response.BotToken = "" // Keep it hidden from UI once set
-		response.AccessToken = ""
-		response.RefreshToken = ""
-		// Telegram API Hash is semi-secret, however we need it visible to edit it or we can leave it hidden 
-		// if the user requests it. For now, exposing it so the input populates correctly.
+		response.BotToken = ""
 		response.AccessToken = ""
 		response.RefreshToken = ""
 
@@ -228,8 +285,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if database.VerifyUser(req.Username, req.Password) {
+		// Look up the user to get their ID and role
+		user, err := database.GetUserByUsername(req.Username)
+		if err != nil {
+			http.Error(w, `{"error": "User lookup failed"}`, http.StatusInternalServerError)
+			return
+		}
+
 		token := generateSessionToken()
-		s.sessions.Store(token, req.Username)
+		s.sessions.Store(token, user.ID) // Store userID (int) in session
 
 		http.SetCookie(w, &http.Cookie{
 			Name:     "auth_token",
@@ -239,7 +303,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			Expires:  time.Now().Add(24 * time.Hour),
 		})
 
-		w.Write([]byte(`{"success": true}`))
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"role":    user.Role,
+		})
 	} else {
 		w.Write([]byte(`{"success": false, "error": "Invalid username or password"}`))
 	}
@@ -385,8 +452,12 @@ func (s *Server) handleTokenGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use admin user ID 1 (single-user system)
-	userID := 1
+	userID, _, err := s.getUserFromSession(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	rawToken, err := database.GenerateBridgeToken(userID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error": "Failed to generate token: %s"}`, err.Error()), http.StatusInternalServerError)
@@ -407,8 +478,13 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := 1
-	err := database.RevokeBridgeToken(userID)
+	userID, _, err := s.getUserFromSession(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	err = database.RevokeBridgeToken(userID)
 	if err != nil {
 		http.Error(w, `{"error": "Failed to revoke token"}`, http.StatusInternalServerError)
 		return
@@ -424,7 +500,12 @@ func (s *Server) handleTokenStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := 1
+	userID, _, err := s.getUserFromSession(r)
+	if err != nil {
+		http.Error(w, `{"error": "Unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	bt, err := database.GetBridgeTokenStatus(userID)
 
 	// Get bridge logs regardless of token status
@@ -552,12 +633,18 @@ func (s *Server) handleBridgeSendLink(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Bridge: Received link from extension for user %d: %s (source: %s)", userID, req.URL, req.SourceSite)
 
-	// Get admin telegram IDs to send notification
+	// Get the bridge user's Telegram ID so bot messages go to them
 	var chatID int64
-	if settings.AdminTelegramIDs != "" {
-		ids := strings.Split(settings.AdminTelegramIDs, ",")
-		if len(ids) > 0 {
-			fmt.Sscanf(strings.TrimSpace(ids[0]), "%d", &chatID)
+	bridgeUser, userErr := database.GetUserByID(userID)
+	if userErr == nil && bridgeUser.TelegramUserID > 0 {
+		chatID = bridgeUser.TelegramUserID
+	} else {
+		// Fallback to admin telegram IDs if user has no linked Telegram
+		if settings.AdminTelegramIDs != "" {
+			ids := strings.Split(settings.AdminTelegramIDs, ",")
+			if len(ids) > 0 {
+				fmt.Sscanf(strings.TrimSpace(ids[0]), "%d", &chatID)
+			}
 		}
 	}
 

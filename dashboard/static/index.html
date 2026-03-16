@@ -23,9 +23,12 @@
                 <a href="#" class="active" data-view="overview">Dashboard</a>
                 <a href="#" data-view="tasks">Task Manager</a>
                 <a href="#" data-view="extension">Extension</a>
-                <a href="#" data-view="settings">Settings</a>
+                <a href="#" data-view="settings" id="settings-link">Settings</a>
             </nav>
             <div style="margin-top: auto; padding: 20px;">
+                <div id="user-info" style="margin-bottom: 12px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+                    <span id="current-user">👤 Loading...</span>
+                </div>
                 <button id="logoutBtn" class="btn" style="width: 100%; background-color: var(--danger-color); color: white; border: none; padding: 10px; border-radius: 6px; cursor: pointer;">
                     Log Out
                 </button>

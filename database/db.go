@@ -44,20 +44,12 @@ func CancelTask(taskID int) bool {
 
 func InitDB() error {
 	host := os.Getenv("MYSQL_HOST")
-	if host == "" {
-		host = "82.25.121.49:3306"
-	}
 	user := os.Getenv("MYSQL_USER")
-	if user == "" {
-		user = "u914498476_downloaderu"
-	}
 	pass := os.Getenv("MYSQL_PASSWORD")
-	if pass == "" {
-		pass = "Ashir9990*"
-	}
 	dbname := os.Getenv("MYSQL_DATABASE")
-	if dbname == "" {
-		dbname = "u914498476_downloader"
+
+	if host == "" || user == "" || pass == "" || dbname == "" {
+		return fmt.Errorf("database not configured: set MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE environment variables")
 	}
 
 	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true", user, pass, host, dbname)
@@ -208,6 +200,9 @@ func createTables() error {
 	DB.Exec("ALTER TABLE tasks ADD COLUMN elapsed_time VARCHAR(50) DEFAULT ''")
 	DB.Exec("ALTER TABLE tasks ADD COLUMN telegram_user_id BIGINT DEFAULT 0")
 
+	// Multi-user migration
+	DB.Exec("ALTER TABLE users ADD COLUMN telegram_user_id BIGINT DEFAULT 0")
+
 	log.Println("Database tables verified/created successfully")
 	return EnsureAdminUser()
 }
@@ -230,6 +225,93 @@ func EnsureAdminUser() error {
 		return nil
 	}
 	return err
+}
+
+// CreateUserFromTelegram creates a new user linked to a Telegram user ID
+func CreateUserFromTelegram(telegramUserID int64, password string) (*User, error) {
+	// Check if already registered
+	var existingID int
+	err := DB.QueryRow("SELECT id FROM users WHERE telegram_user_id = ?", telegramUserID).Scan(&existingID)
+	if err == nil {
+		return nil, fmt.Errorf("already registered")
+	}
+
+	username := fmt.Sprintf("tg_%d", telegramUserID)
+	email := fmt.Sprintf("%d@telegram", telegramUserID)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := DB.Exec("INSERT INTO users (username, email, password_hash, role, telegram_user_id) VALUES (?, ?, ?, 'user', ?)",
+		username, email, string(hash), telegramUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	id, _ := res.LastInsertId()
+	return &User{
+		ID:             int(id),
+		Username:       username,
+		Email:          email,
+		Role:           "user",
+		TelegramUserID: telegramUserID,
+	}, nil
+}
+
+// GetUserByTelegramID looks up a DB user by their Telegram user ID
+func GetUserByTelegramID(telegramUserID int64) (*User, error) {
+	var u User
+	err := DB.QueryRow("SELECT id, username, email, role, IFNULL(telegram_user_id, 0), created_at FROM users WHERE telegram_user_id = ? LIMIT 1", telegramUserID).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.TelegramUserID, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// GetUserByUsername returns a full User struct by username
+func GetUserByUsername(username string) (*User, error) {
+	var u User
+	err := DB.QueryRow("SELECT id, username, email, role, IFNULL(telegram_user_id, 0), created_at FROM users WHERE username = ? LIMIT 1", username).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.TelegramUserID, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// GetUserByID returns a full User struct by ID
+func GetUserByID(userID int) (*User, error) {
+	var u User
+	err := DB.QueryRow("SELECT id, username, email, role, IFNULL(telegram_user_id, 0), created_at FROM users WHERE id = ? LIMIT 1", userID).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.TelegramUserID, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// GetTasksByUserID returns tasks for a specific user
+func GetTasksByUserID(userID int, limit int) ([]Task, error) {
+	rows, err := DB.Query("SELECT id, user_id, file_name, IFNULL(file_size, 0), input_type, IFNULL(download_progress, 0), IFNULL(upload_progress, 0), IFNULL(download_speed, 0), IFNULL(upload_speed, 0), status, IFNULL(drive_link, ''), IFNULL(drive_file_id, ''), IFNULL(elapsed_time, ''), created_at FROM tasks WHERE user_id = ? ORDER BY id DESC LIMIT ?", userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		err := rows.Scan(&t.ID, &t.UserID, &t.FileName, &t.FileSize, &t.InputType, &t.DownloadProgress, &t.UploadProgress, &t.DownloadSpeed, &t.UploadSpeed, &t.Status, &t.DriveLink, &t.DriveFileID, &t.ElapsedTime, &t.CreatedAt)
+		if err != nil {
+			log.Printf("Error scanning task in GetTasksByUserID: %v", err)
+			continue
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
 }
 
 // VerifyUser checks the given username and password against the database

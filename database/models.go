@@ -3,12 +3,13 @@ package database
 import "time"
 
 type User struct {
-	ID           int       `json:"id"`
-	Username     string    `json:"username"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"password_hash"`
-	Role         string    `json:"role"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID             int       `json:"id"`
+	Username       string    `json:"username"`
+	Email          string    `json:"email"`
+	PasswordHash   string    `json:"-"`
+	Role           string    `json:"role"`
+	TelegramUserID int64     `json:"telegram_user_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type Task struct {

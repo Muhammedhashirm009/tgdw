@@ -488,6 +488,31 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // ===== Multi-User: Fetch current user info =====
+    let currentUserInfo = null;
+
+    function fetchCurrentUser() {
+        fetch('/api/me')
+            .then(res => {
+                if (res.status === 401) window.location.href = 'login.html';
+                return res.json();
+            })
+            .then(data => {
+                currentUserInfo = data;
+                const userEl = document.getElementById('current-user');
+                if (userEl) {
+                    const roleIcon = data.role === 'admin' ? '👑' : '👤';
+                    userEl.textContent = `${roleIcon} ${data.username}`;
+                }
+                // Hide Settings tab for non-admin users
+                if (data.role !== 'admin') {
+                    const settingsLink = document.getElementById('settings-link');
+                    if (settingsLink) settingsLink.style.display = 'none';
+                }
+            })
+            .catch(console.error);
+    }
+
     // Refresh data every 5 seconds
     setInterval(() => {
         fetchStatus();
@@ -497,6 +522,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Refresh extension data every 10 seconds
     setInterval(loadExtensionData, 10000);
 
+    fetchCurrentUser();
     fetchStatus();
     fetchTasks();
     loadSettings();

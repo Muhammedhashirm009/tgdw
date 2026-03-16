@@ -23,6 +23,15 @@ import (
 
 const maxDailyTasksNormal = 5
 
+// getDashboardURL returns the dashboard URL from env, or a placeholder
+func getDashboardURL() string {
+	url := os.Getenv("DASHBOARD_URL")
+	if url != "" {
+		return url
+	}
+	return "your-dashboard-url"
+}
+
 type BotHandler struct {
 	bot *tele.Bot
 }
@@ -64,6 +73,8 @@ func (bh *BotHandler) setupRoutes() {
 	bh.bot.Handle("/cancel", bh.handleCancel)
 	bh.bot.Handle("/status", bh.handleStatus)
 	bh.bot.Handle("/me", bh.handleMe)
+	bh.bot.Handle("/register", bh.handleRegister)
+	bh.bot.Handle("/myaccount", bh.handleMyAccount)
 
 	// Inline button callbacks
 	bh.bot.Handle("\ftasks", bh.handleTasksCallback)
@@ -290,6 +301,71 @@ func (bh *BotHandler) handleText(c tele.Context) error {
 	return c.Send("Send me a document or a direct HTTP/HTTPS link to download and upload it to Google Drive.", &tele.SendOptions{ParseMode: tele.ModeHTML})
 }
 
+// ===== Registration Handlers =====
+
+func (bh *BotHandler) handleRegister(c tele.Context) error {
+	args := c.Args()
+	if len(args) == 0 {
+		return c.Send("⚠️ Usage: <code>/register &lt;password&gt;</code>\n\nExample: <code>/register MySecurePass123</code>\n\nThis creates your dashboard account linked to your Telegram.", &tele.SendOptions{ParseMode: tele.ModeHTML})
+	}
+
+	password := args[0]
+	if len(password) < 6 {
+		return c.Send("⚠️ Password must be at least 6 characters long.")
+	}
+
+	telegramUserID := c.Sender().ID
+
+	// Check if already registered
+	existing, _ := database.GetUserByTelegramID(telegramUserID)
+	if existing != nil {
+		return c.Send(fmt.Sprintf("ℹ️ <b>You're already registered!</b>\n\n"+
+			"👤 <b>Username:</b> <code>%s</code>\n"+
+			"🔑 <b>Role:</b> %s\n\n"+
+			"Use these credentials to log into the web dashboard.",
+			existing.Username, existing.Role), &tele.SendOptions{ParseMode: tele.ModeHTML})
+	}
+
+	user, err := database.CreateUserFromTelegram(telegramUserID, password)
+	if err != nil {
+		return c.Send("❌ Registration failed: " + err.Error())
+	}
+
+	return c.Send(fmt.Sprintf("✅ <b>Account Created!</b>\n\n"+
+		"👤 <b>Username:</b> <code>%s</code>\n"+
+		"🔑 <b>Password:</b> <code>%s</code>\n\n"+
+		"🌐 <b>Dashboard:</b> %s\n\n"+
+		"Log in with the credentials above.\n"+
+		"Go to <b>Extension</b> tab to generate your bridge token.",
+		user.Username, password, getDashboardURL()), &tele.SendOptions{ParseMode: tele.ModeHTML})
+}
+
+func (bh *BotHandler) handleMyAccount(c tele.Context) error {
+	telegramUserID := c.Sender().ID
+	user, err := database.GetUserByTelegramID(telegramUserID)
+	if err != nil {
+		return c.Send("⚠️ You haven't registered yet.\n\nUse <code>/register &lt;password&gt;</code> to create your dashboard account.", &tele.SendOptions{ParseMode: tele.ModeHTML})
+	}
+
+	return c.Send(fmt.Sprintf("🔐 <b>Your Dashboard Account</b>\n\n"+
+		"👤 <b>Username:</b> <code>%s</code>\n"+
+		"🔑 <b>Role:</b> %s\n"+
+		"🆔 <b>Telegram ID:</b> <code>%d</code>\n"+
+		"🌐 <b>Dashboard:</b> %s\n\n"+
+		"Log in with your username and the password you set during registration.",
+		user.Username, user.Role, telegramUserID, getDashboardURL()), &tele.SendOptions{ParseMode: tele.ModeHTML})
+}
+
+// resolveDBUserID maps a Telegram user ID to a database user ID.
+// Falls back to admin user ID 1 if the Telegram user hasn't registered.
+func resolveDBUserID(telegramUserID int64) int {
+	dbUser, err := database.GetUserByTelegramID(telegramUserID)
+	if err == nil && dbUser != nil {
+		return dbUser.ID
+	}
+	return 1 // fallback to admin
+}
+
 func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error {
 	telegramUserID := c.Sender().ID
 	isAdmin := database.IsAdminTelegram(telegramUserID)
@@ -400,7 +476,7 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 		"⏳ <b>Status:</b> Queued...",
 		fileName, formatSize(fileSize)), &tele.SendOptions{ParseMode: tele.ModeHTML})
 
-	taskID, err := database.CreateTaskWithTelegram(1, telegramUserID, fileName, fileSize, "Direct Link")
+	taskID, err := database.CreateTaskWithTelegram(resolveDBUserID(telegramUserID), telegramUserID, fileName, fileSize, "Direct Link")
 	if err != nil {
 		bh.bot.Edit(msg, "❌ Error creating task in database.")
 		return err
@@ -613,7 +689,7 @@ func (bh *BotHandler) handleDocument(c tele.Context) error {
 	}
 
 	// Create Task in DB with Telegram user ID
-	taskID, err := database.CreateTaskWithTelegram(1, telegramUserID, doc.FileName, doc.FileSize, "Telegram Document")
+	taskID, err := database.CreateTaskWithTelegram(resolveDBUserID(telegramUserID), telegramUserID, doc.FileName, doc.FileSize, "Telegram Document")
 	if err != nil {
 		bh.bot.Edit(msg, "❌ Error creating task in database.")
 		return err

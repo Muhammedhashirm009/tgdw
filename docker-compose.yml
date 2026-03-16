@@ -9,6 +9,11 @@ services:
     environment:
       - TELEGRAM_API_ID=YOUR_API_ID_HERE
       - TELEGRAM_API_HASH=YOUR_API_HASH_HERE
+      - MYSQL_HOST=your-db-host:3306
+      - MYSQL_USER=your-db-user
+      - MYSQL_PASSWORD=your-db-password
+      - MYSQL_DATABASE=your-db-name
+      - DASHBOARD_URL=https://your-app.koyeb.app
     volumes:
       - ./data/telegram-api:/var/lib/telegram-bot-api
     restart: unless-stopped
