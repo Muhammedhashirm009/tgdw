@@ -222,9 +222,19 @@ func EnsureAdminUser() error {
 			return err
 		}
 		log.Println("Admin user created successfully")
-		return nil
 	}
-	return err
+
+	// Link admin user to their Telegram ID from env var
+	adminTgID := os.Getenv("ADMIN_TELEGRAM_ID")
+	if adminTgID != "" {
+		var adminTelegramID int64
+		fmt.Sscanf(adminTgID, "%d", &adminTelegramID)
+		if adminTelegramID > 0 {
+			DB.Exec("UPDATE users SET telegram_user_id = ? WHERE username = 'admin' AND (telegram_user_id = 0 OR telegram_user_id IS NULL OR telegram_user_id = ?)", adminTelegramID, adminTelegramID)
+		}
+	}
+
+	return nil
 }
 
 // CreateUserFromTelegram creates a new user linked to a Telegram user ID
