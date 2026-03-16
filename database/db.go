@@ -207,7 +207,8 @@ func createTables() error {
 	return EnsureAdminUser()
 }
 
-// EnsureAdminUser checks if the admin user exists, and if not, creates it with default credentials
+// EnsureAdminUser checks if the admin user exists, and if not, creates it with default credentials.
+// Also links the admin user to their Telegram ID via ADMIN_TELEGRAM_ID env var.
 func EnsureAdminUser() error {
 	var id int
 	err := DB.QueryRow("SELECT id FROM users WHERE username = 'admin' LIMIT 1").Scan(&id)
@@ -230,7 +231,11 @@ func EnsureAdminUser() error {
 		var adminTelegramID int64
 		fmt.Sscanf(adminTgID, "%d", &adminTelegramID)
 		if adminTelegramID > 0 {
-			DB.Exec("UPDATE users SET telegram_user_id = ? WHERE username = 'admin' AND (telegram_user_id = 0 OR telegram_user_id IS NULL OR telegram_user_id = ?)", adminTelegramID, adminTelegramID)
+			// Remove any duplicate non-admin user that was created via /register with this Telegram ID
+			DB.Exec("DELETE FROM users WHERE telegram_user_id = ? AND username != 'admin'", adminTelegramID)
+			// Link the admin account to this Telegram ID
+			DB.Exec("UPDATE users SET telegram_user_id = ? WHERE username = 'admin'", adminTelegramID)
+			log.Printf("Admin user linked to Telegram ID %d", adminTelegramID)
 		}
 	}
 
