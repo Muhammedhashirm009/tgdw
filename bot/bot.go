@@ -153,6 +153,8 @@ func (bh *BotHandler) handleHelp(c tele.Context) error {
 	text := "📖 <b>Available Commands</b>\n\n" +
 		"/start — Main menu\n" +
 		"/help — Show this help\n" +
+		"/register &lt;password&gt; — Create dashboard account\n" +
+		"/myaccount — Your dashboard login info\n" +
 		"/tasks — View your recent tasks\n" +
 		"/status — System status\n" +
 		"/me — Your profile & limits\n" +
