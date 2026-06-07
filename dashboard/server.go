@@ -33,22 +33,22 @@ func NewServer(addr string) *Server {
 
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
-	
+
 	// API routes
 	mux.HandleFunc("/api/status", s.authMiddleware(s.handleStatus))
 	mux.HandleFunc("/api/tasks", s.authMiddleware(s.handleTasks))
 	mux.HandleFunc("/api/cancel", s.authMiddleware(s.handleTaskCancel))
 	mux.HandleFunc("/api/settings", s.authMiddleware(s.handleSettings))
 	mux.HandleFunc("/api/logout", s.authMiddleware(s.handleLogout))
-	
+
 	// Public API routes
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/auth/google/login", s.authMiddleware(s.handleGoogleLogin))
 	mux.HandleFunc("/api/auth/google/callback", s.handleGoogleCallback)
-	
+
 	// Static files with static auth
 	mux.HandleFunc("/", s.staticAuthMiddleware)
-	
+
 	log.Printf("Starting Web Dashboard on %s\n", s.addr)
 	return http.ListenAndServe(s.addr, mux)
 }
@@ -65,7 +65,7 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, `{"error": "Unauthorized session"}`, http.StatusUnauthorized)
 			return
 		}
-		
+
 		next(w, r)
 	}
 }
@@ -88,36 +88,36 @@ func (s *Server) staticAuthMiddleware(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login.html", http.StatusTemporaryRedirect)
 		return
 	}
-	
+
 	http.FileServer(http.Dir("./dashboard/static")).ServeHTTP(w, r)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	downloads, uploads, err := database.GetStatusSummary()
 	if err != nil {
 		w.Write([]byte(`{"status": "error", "active_downloads": 0, "active_uploads": 0}`))
 		return
 	}
-	
+
 	response := map[string]interface{}{
-		"status": "ok",
+		"status":           "ok",
 		"active_downloads": downloads,
-		"active_uploads": uploads,
+		"active_uploads":   uploads,
 	}
 	json.NewEncoder(w).Encode(response)
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	tasks, err := database.GetAllTasks()
 	if err != nil || tasks == nil {
 		w.Write([]byte(`[]`))
 		return
 	}
-	
+
 	json.NewEncoder(w).Encode(tasks)
 }
 
@@ -155,7 +155,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error": "Failed to load settings"}`, http.StatusInternalServerError)
 			return
 		}
-		
+
 		response := struct {
 			database.Settings
 			IsGoogleConnected bool `json:"is_google_connected"`
@@ -169,7 +169,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		response.BotToken = "" // Keep it hidden from UI once set
 		response.AccessToken = ""
 		response.RefreshToken = ""
-		// Telegram API Hash is semi-secret, however we need it visible to edit it or we can leave it hidden 
+		// Telegram API Hash is semi-secret, however we need it visible to edit it or we can leave it hidden
 		// if the user requests it. For now, exposing it so the input populates correctly.
 		response.AccessToken = ""
 		response.RefreshToken = ""
@@ -185,8 +185,23 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		err := database.UpdateSettings(newSettings)
+		// The GET handler hides secrets, so the form submits them blank. Merge
+		// the incoming values with what is already stored to avoid wiping the
+		// bot token / Google client secret on every save.
+		existing, err := database.GetSettings()
 		if err != nil {
+			http.Error(w, `{"error": "Failed to load existing settings"}`, http.StatusInternalServerError)
+			return
+		}
+		newSettings.ID = existing.ID
+		if strings.TrimSpace(newSettings.BotToken) == "" {
+			newSettings.BotToken = existing.BotToken
+		}
+		if strings.TrimSpace(newSettings.GoogleClientSecret) == "" {
+			newSettings.GoogleClientSecret = existing.GoogleClientSecret
+		}
+
+		if err := database.UpdateSettings(newSettings); err != nil {
 			http.Error(w, `{"error": "Failed to save settings"}`, http.StatusInternalServerError)
 			return
 		}
@@ -224,6 +239,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			Value:    token,
 			Path:     "/",
 			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
 			Expires:  time.Now().Add(24 * time.Hour),
 		})
 
@@ -284,12 +300,34 @@ func (s *Server) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := getOAuthConfig(settings, r)
+
+	// Generate a random state token and store it in a short-lived cookie so the
+	// callback can verify the request originated from us (CSRF protection).
+	state := generateSessionToken()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(10 * time.Minute),
+	})
+
 	// Use offline access to prompt for a refresh token
-	url := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	url := config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
 func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
+	// Verify the state token against the cookie set during login (CSRF check).
+	stateCookie, err := r.Cookie("oauth_state")
+	if err != nil || stateCookie.Value == "" || r.URL.Query().Get("state") != stateCookie.Value {
+		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
+		return
+	}
+	// Clear the state cookie now that it has been used.
+	http.SetCookie(w, &http.Cookie{Name: "oauth_state", Value: "", Path: "/", MaxAge: -1})
+
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, "Code not found in request", http.StatusBadRequest)
