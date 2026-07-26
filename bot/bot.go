@@ -496,6 +496,13 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 		return err
 	}
 
+	// Notify platform immediately that task started
+	go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+		TaskID: taskID, FileName: fileName, FileSize: fileSize,
+		Status: "Starting", Progress: 0, Speed: 0,
+		TelegramID: fmt.Sprintf("%d", c.Sender().ID), TelegramUser: c.Sender().Username,
+	})
+
 	ctx, cancel := context.WithCancel(context.Background())
 	database.RegisterCancelFunc(taskID, cancel)
 
@@ -756,6 +763,13 @@ func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileS
 		bh.editFinal(msg, "❌ Error creating task in database.")
 		return err
 	}
+
+	// Notify platform immediately that task started
+	go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+		TaskID: taskID, FileName: fileName, FileSize: fileSize,
+		Status: "Starting", Progress: 0, Speed: 0,
+		TelegramID: fmt.Sprintf("%d", c.Sender().ID), TelegramUser: c.Sender().Username,
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	database.RegisterCancelFunc(taskID, cancel)

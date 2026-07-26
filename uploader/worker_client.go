@@ -135,7 +135,7 @@ func GetActiveGDriveAccounts(workerURL, adminKey string) ([]GDriveAccountCredent
 
 // SyncCatalogToWorker registers the uploaded media file into Cloudflare D1 via Worker API
 func SyncCatalogToWorker(workerURL, adminKey string, payload CatalogSyncPayload) (*CatalogSyncResponse, error) {
-	endpoint := fmt.Sprintf("%s/api/admin/catalog", workerURL)
+	endpoint := fmt.Sprintf("%s/api/admin/bot-catalog-sync", workerURL)
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
