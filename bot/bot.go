@@ -1141,17 +1141,23 @@ func (bh *BotHandler) newUploader(settings database.Settings) (*uploader.DriveUp
 		accounts, err := uploader.GetActiveGDriveAccounts(bh.workerURL, bh.adminKey)
 		if err == nil && len(accounts) > 0 {
 			acc := accounts[0]
-			token := &oauth2.Token{
-				AccessToken:  acc.AccessToken,
-				RefreshToken: acc.RefreshToken,
-				Expiry:       time.Now().Add(1 * time.Hour),
-				TokenType:    "Bearer",
-			}
-			uploaderInst, err := uploader.NewDriveUploader(context.Background(), token, acc.ClientID, acc.ClientSecret)
-			if err == nil {
-				return uploaderInst, nil
+			if strings.TrimSpace(acc.AccessToken) != "" {
+				token := &oauth2.Token{
+					AccessToken:  acc.AccessToken,
+					RefreshToken: acc.RefreshToken,
+					Expiry:       time.Now().Add(1 * time.Hour),
+					TokenType:    "Bearer",
+				}
+				uploaderInst, err := uploader.NewDriveUploader(context.Background(), token, acc.ClientID, acc.ClientSecret)
+				if err == nil {
+					return uploaderInst, nil
+				}
 			}
 		}
+	}
+
+	if strings.TrimSpace(settings.AccessToken) == "" {
+		return nil, fmt.Errorf("no connected Google Drive account found!\n\nPlease ask a Super Admin to connect Google Drive in the Admin Panel:\n👉 https://aurora-play.pages.dev/#/superadmin/gdrive")
 	}
 
 	token := &oauth2.Token{
