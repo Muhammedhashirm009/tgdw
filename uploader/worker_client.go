@@ -175,3 +175,39 @@ func SyncCatalogToWorker(workerURL, adminKey string, payload CatalogSyncPayload)
 
 	return &res, nil
 }
+
+type LiveTaskProgressPayload struct {
+	TaskID       int    `json:"task_id"`
+	FileName     string `json:"file_name"`
+	FileSize     int64  `json:"file_size"`
+	Status       string `json:"status"`
+	Progress     int    `json:"progress"`
+	Speed        int64  `json:"speed"`
+	TelegramID   string `json:"telegram_id"`
+	TelegramUser string `json:"telegram_user,omitempty"`
+}
+
+// SyncTaskProgressToWorker notifies Cloudflare Worker of live in-progress bot tasks
+func SyncTaskProgressToWorker(workerURL, adminKey string, payload LiveTaskProgressPayload) {
+	if workerURL == "" {
+		return
+	}
+	endpoint := fmt.Sprintf("%s/api/admin/bot-tasks/sync", workerURL)
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if adminKey != "" {
+		req.Header.Set("x-admin-key", adminKey)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
