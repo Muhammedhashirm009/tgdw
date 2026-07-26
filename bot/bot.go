@@ -1266,7 +1266,7 @@ func (bh *BotHandler) finishTask(msg *tele.Message, taskID int, fileName string,
 		log.Printf("[Catalog Sync] Syncing '%s' to Worker (user: %s / tg:%d)", fileName, senderUsername, senderID)
 		syncRes, syncErr := uploader.SyncCatalogToWorker(bh.workerURL, bh.adminKey, uploader.CatalogSyncPayload{
 			Title:                fileName,
-			Type:                 "movie",
+			Type:                 "", // Let Worker detect movie vs series from filename
 			DriveFileID:          driveFileID,
 			DriveLink:            driveLink,
 			FileSize:             fileSize,
