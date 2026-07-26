@@ -1,0 +1,10 @@
+# Binaries and build artifacts
+bot-app
+bot-app.exe
+*.exe
+*.dll
+
+# Downloads & temp files
+downloads/
+*.log
+.env

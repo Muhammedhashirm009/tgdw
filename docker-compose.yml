@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "9990:9990"
+      - "8081:8081"
+    environment:
+      - TELEGRAM_API_ID=YOUR_API_ID_HERE
+      - TELEGRAM_API_HASH=YOUR_API_HASH_HERE
+    volumes:
+      - ./data/telegram-api:/var/lib/telegram-bot-api
+    restart: unless-stopped
