@@ -55,6 +55,10 @@ func main() {
 
 	adminKey := os.Getenv("ADMIN_API_KEY")
 	tgAPIURL := os.Getenv("TELEGRAM_API_URL")
+	if tgAPIURL == "" && (os.Getenv("TELEGRAM_API_ID") != "" || os.Getenv("TELEGRAM_API_HASH") != "") {
+		tgAPIURL = "http://127.0.0.1:8081"
+		log.Println("⚡ Configured Local Telegram Bot API Server on http://127.0.0.1:8081 (supports 2GB uploads)")
+	}
 	dlDir := os.Getenv("DOWNLOAD_DIR")
 	if dlDir == "" {
 		dlDir = "./downloads"

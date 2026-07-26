@@ -50,7 +50,7 @@ func NewBot(token string, apiURL string, dlDir string, workerURL string, adminKe
 		},
 	}
 
-	if apiURL != "" && apiURL != "https://api.telegram.org" {
+	if apiURL != "" {
 		pref.URL = apiURL
 	}
 
