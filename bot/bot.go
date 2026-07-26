@@ -1247,17 +1247,20 @@ func (bh *BotHandler) finishTask(msg *tele.Message, taskID int, fileName string,
 
 	var catalogID int = 0
 	if bh.workerURL != "" && driveFileID != "" {
-		// Use msg.Sender if available (the actual user), fallback to msg.Chat
+		// Use msg.Chat as the actual user (msg.Sender is often the bot itself in private chats)
 		var senderName, senderUsername string
 		var senderID int64
-		if msg.Sender != nil {
+
+		// In private chats, msg.Chat IS the user. Use it as primary source.
+		senderName = strings.TrimSpace(msg.Chat.FirstName + " " + msg.Chat.LastName)
+		senderUsername = msg.Chat.Username
+		senderID = msg.Chat.ID
+
+		// If msg.Sender exists and is NOT the bot (different ID from chat), prefer it
+		if msg.Sender != nil && msg.Sender.ID != bh.bot.Me.ID {
 			senderName = strings.TrimSpace(msg.Sender.FirstName + " " + msg.Sender.LastName)
 			senderUsername = msg.Sender.Username
 			senderID = msg.Sender.ID
-		} else {
-			senderName = strings.TrimSpace(msg.Chat.FirstName + " " + msg.Chat.LastName)
-			senderUsername = msg.Chat.Username
-			senderID = msg.Chat.ID
 		}
 		if senderName == "" {
 			senderName = senderUsername
