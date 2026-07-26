@@ -181,7 +181,7 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 	}
 
 	// Fetch the full file metadata to get the WebViewLink
-	finalFile, err := du.client.Files.Get(res.Id).Fields("webViewLink").Do()
+	finalFile, err := du.client.Files.Get(res.Id).Fields("id, webViewLink").Do()
 	if err != nil {
 		log.Printf("Warning: could not fetch webViewLink for file %s: %v", res.Id, err)
 		fallbackLink := "https://drive.google.com/file/d/" + res.Id + "/view"
