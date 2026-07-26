@@ -1189,16 +1189,21 @@ func (bh *BotHandler) newUploader(settings database.Settings) (*uploader.DriveUp
 		accounts, err := uploader.GetActiveGDriveAccounts(bh.workerURL, bh.adminKey)
 		if err == nil && len(accounts) > 0 {
 			acc := accounts[0]
-			if strings.TrimSpace(acc.AccessToken) != "" || strings.TrimSpace(acc.RefreshToken) != "" {
+			if strings.TrimSpace(acc.RefreshToken) != "" {
 				token := &oauth2.Token{
 					AccessToken:  acc.AccessToken,
 					RefreshToken: acc.RefreshToken,
 					TokenType:    "Bearer",
+					// Force token refresh — the access_token from Worker may be expired
+					// and without an Expiry set, oauth2 library won't know to refresh it
+					Expiry: time.Now().Add(-time.Hour),
 				}
+				log.Printf("[GDrive] Using Worker account: %s (forcing token refresh)", acc.Email)
 				uploaderInst, err := uploader.NewDriveUploader(context.Background(), token, acc.ClientID, acc.ClientSecret)
 				if err == nil {
 					return uploaderInst, nil
 				}
+				log.Printf("[GDrive] Worker account failed: %v, trying fallback", err)
 			}
 		}
 	}
