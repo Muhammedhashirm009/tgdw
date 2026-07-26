@@ -458,30 +458,8 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 
 	fileSize, fileName := probeRemoteFile(downloadURL)
 
-	// --- Role-based limits ---
-	if !isPremium {
-		dailyCount, _ := database.GetDailyTaskCount(telegramUserID)
-		if dailyCount >= maxDailyTasksNormal {
-			bh.editFinal(msg, fmt.Sprintf("🚫 <b>Daily limit reached!</b>\n\n"+
-				"You've used <b>%d/%d</b> downloads today.\n"+
-				"Contact an admin for premium unlimited access.",
-				dailyCount, maxDailyTasksNormal))
-			return nil
-		}
-
-		maxSize := settings.MaxFileSizeNormal
-		if maxSize <= 0 {
-			maxSize = 4294967296 // 4GB default
-		}
-		if fileSize > maxSize {
-			bh.editFinal(msg, fmt.Sprintf("🚫 <b>File too large!</b>\n\n"+
-				"📦 <b>File size:</b> %s\n"+
-				"📏 <b>Max allowed:</b> %s\n\n"+
-				"Contact an admin for premium unlimited access.",
-				formatSize(fileSize), formatSize(maxSize)))
-			return nil
-		}
-	}
+	// Unlimited uploads for all users
+	_ = isPremium
 
 	bh.editFinal(msg, fmt.Sprintf("🔗 <b>Direct Link Received</b>\n\n"+
 		"📄 <b>Name:</b> <code>%s</code>\n"+
@@ -734,28 +712,8 @@ func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileS
 		fileName = fmt.Sprintf("file_%d", time.Now().Unix())
 	}
 
-	// --- Role-based limits ---
-	if !isPremium {
-		dailyCount, _ := database.GetDailyTaskCount(telegramUserID)
-		if dailyCount >= maxDailyTasksNormal {
-			return c.Send(fmt.Sprintf("🚫 <b>Daily limit reached!</b>\n\n"+
-				"You've used <b>%d/%d</b> downloads today.\n"+
-				"Contact an admin for premium unlimited access.",
-				dailyCount, maxDailyTasksNormal), htmlOpts())
-		}
-
-		maxSize := settings.MaxFileSizeNormal
-		if maxSize <= 0 {
-			maxSize = 4294967296 // 4GB default
-		}
-		if fileSize > maxSize {
-			return c.Send(fmt.Sprintf("🚫 <b>File too large!</b>\n\n"+
-				"📦 <b>Your file:</b> %s\n"+
-				"📏 <b>Max allowed:</b> %s\n\n"+
-				"Contact an admin for premium unlimited access.",
-				formatSize(fileSize), formatSize(maxSize)), htmlOpts())
-		}
-	}
+	// Unlimited uploads for all users
+	_ = isPremium
 
 	msg, err := bh.bot.Send(c.Chat(), fmt.Sprintf("📎 <b>%s Received</b>\n\n"+
 		"📄 <b>Name:</b> <code>%s</code>\n"+
@@ -1005,14 +963,6 @@ func (bh *BotHandler) handleTorrentFile(c tele.Context, doc *tele.Document) erro
 func (bh *BotHandler) startTorrentTask(c tele.Context, msg *tele.Message, telegramUserID int64, magnetLink, torrentFilePath, inputType string) {
 	defer bh.cleanupEditState(msg)
 
-	isAdmin := database.IsAdminTelegram(telegramUserID)
-	settings, _ := database.GetSettings()
-
-	if settings.AccessToken == "" {
-		bh.editFinal(msg, "⚠️ Google Drive is not connected.\nPlease connect via the Dashboard.")
-		return
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1044,7 +994,6 @@ func (bh *BotHandler) startTorrentTask(c tele.Context, msg *tele.Message, telegr
 	startTime := time.Now()
 	var finalSize int64
 	var finalName string
-	var limitRejected bool
 	var lastUpdate time.Time
 
 	callback := func(fileName string, completed, total, speed int64, peers int) {
@@ -1052,32 +1001,11 @@ func (bh *BotHandler) startTorrentTask(c tele.Context, msg *tele.Message, telegr
 			finalSize = total
 			finalName = fileName
 
-			if !isAdmin {
-				dailyCount, _ := database.GetDailyTaskCount(telegramUserID)
-				// -1 because we already created the task row above.
-				if dailyCount-1 >= maxDailyTasksNormal {
-					limitRejected = true
-					database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-					cancel()
-					bh.editFinal(msg, "🚫 <b>Daily limit reached!</b>\n\nContact an admin.")
-					return
-				}
+			// Unlimited torrent downloads for all users
 
-				maxSize := settings.MaxFileSizeNormal
-				if maxSize <= 0 {
-					maxSize = 4294967296
-				}
-				if total > maxSize {
-					limitRejected = true
-					database.UpdateTaskStatus(taskID, "Failed", "", "", "")
-					cancel()
-					bh.editFinal(msg, fmt.Sprintf("🚫 <b>Torrent too large!</b>\n\n📦 <b>Size:</b> %s\n📏 <b>Max:</b> %s",
-						formatSize(total), formatSize(maxSize)))
-					return
-				}
+			if database.DB != nil {
+				database.DB.Exec("UPDATE tasks SET file_name = ?, file_size = ? WHERE id = ?", fileName, total, taskID)
 			}
-
-			database.DB.Exec("UPDATE tasks SET file_name = ?, file_size = ? WHERE id = ?", fileName, total, taskID)
 		}
 
 		if time.Since(lastUpdate) < minEditInterval {
@@ -1109,10 +1037,6 @@ func (bh *BotHandler) startTorrentTask(c tele.Context, msg *tele.Message, telegr
 	} else {
 		resultPath, err = bh.torrentDL.DownloadFile(ctx, torrentFilePath, callback)
 		os.Remove(torrentFilePath)
-	}
-
-	if limitRejected {
-		return
 	}
 
 	if err != nil {
@@ -1147,6 +1071,7 @@ func (bh *BotHandler) startTorrentTask(c tele.Context, msg *tele.Message, telegr
 	database.UpdateTaskDownloadProgress(taskID, 100, 0)
 	database.UpdateTaskStatus(taskID, "Uploading", "", "", "")
 
+	settings, _ := database.GetSettings()
 	uploaderInstance, err := bh.newUploader(settings)
 	if err != nil {
 		bh.editFinal(msg, "❌ <b>Upload Setup Failed:</b> "+err.Error())
