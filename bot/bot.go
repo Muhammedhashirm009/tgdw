@@ -94,6 +94,8 @@ func (bh *BotHandler) setupRoutes() {
 	bh.bot.Handle("/cancel", bh.handleCancel)
 	bh.bot.Handle("/status", bh.handleStatus)
 	bh.bot.Handle("/me", bh.handleMe)
+	bh.bot.Handle("/grant", bh.handleGrant)
+	bh.bot.Handle("/premium", bh.handleGrant)
 
 	// Inline button callbacks
 	bh.bot.Handle("\ftasks", bh.handleTasksCallback)
@@ -164,6 +166,9 @@ func formatSize(bytes int64) string {
 func roleLabel(telegramUserID int64) string {
 	if database.IsAdminTelegram(telegramUserID) {
 		return "👑 Admin"
+	}
+	if database.IsPremiumTelegram(telegramUserID) {
+		return "⭐ Premium User"
 	}
 	return "👤 User"
 }
@@ -262,19 +267,24 @@ func (bh *BotHandler) handleHelp(c tele.Context) error {
 func (bh *BotHandler) handleMe(c tele.Context) error {
 	userID := c.Sender().ID
 	isAdmin := database.IsAdminTelegram(userID)
+	isPremium := database.IsPremiumTelegram(userID)
 	dailyCount, _ := database.GetDailyTaskCount(userID)
 
 	settings, _ := database.GetSettings()
 	maxSize := formatSize(settings.MaxFileSizeNormal)
 
 	var text string
-	if isAdmin {
+	if isAdmin || isPremium {
+		roleTitle := "⭐ Premium User"
+		if isAdmin {
+			roleTitle = "👑 Admin"
+		}
 		text = fmt.Sprintf("👤 <b>Your Profile</b>\n\n"+
 			"🆔 <b>Telegram ID:</b> <code>%d</code>\n"+
-			"👑 <b>Role:</b> Admin\n"+
+			"✨ <b>Role:</b> %s\n"+
 			"📊 <b>Tasks Today:</b> %d\n\n"+
 			"✨ <i>Unlimited file size &amp; downloads</i>",
-			userID, dailyCount)
+			userID, roleTitle, dailyCount)
 	} else {
 		remaining := maxDailyTasksNormal - dailyCount
 		if remaining < 0 {
@@ -290,6 +300,22 @@ func (bh *BotHandler) handleMe(c tele.Context) error {
 	}
 
 	return c.Send(text, htmlOpts())
+}
+
+func (bh *BotHandler) handleGrant(c tele.Context) error {
+	if !database.IsAdminTelegram(c.Sender().ID) {
+		return c.Send("❌ Only bot admins can grant premium access.")
+	}
+	args := c.Args()
+	if len(args) == 0 {
+		return c.Send("⚠️ Usage: <code>/grant &lt;telegram_user_id&gt;</code>", htmlOpts())
+	}
+	userID, err := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
+	if err != nil {
+		return c.Send("⚠️ Please provide a valid numeric Telegram User ID.")
+	}
+	database.GrantPremium(userID)
+	return c.Send(fmt.Sprintf("⭐ Granted <b>Premium Access</b> to Telegram User ID <code>%d</code>!", userID), htmlOpts())
 }
 
 func (bh *BotHandler) handleTasks(c tele.Context) error {
@@ -421,16 +447,9 @@ func (bh *BotHandler) handleText(c tele.Context) error {
 
 func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error {
 	telegramUserID := c.Sender().ID
-	isAdmin := database.IsAdminTelegram(telegramUserID)
+	isPremium := database.IsPremiumTelegram(telegramUserID)
 
-	settings, err := database.GetSettings()
-	if err != nil {
-		return c.Send("❌ Internal error: Could not load settings.")
-	}
-
-	if settings.AccessToken == "" {
-		return c.Send("⚠️ Google Drive is not connected.\nPlease connect via the Dashboard.")
-	}
+	settings, _ := database.GetSettings()
 
 	msg, err := bh.bot.Send(c.Chat(), "⏳ Fetching link info...")
 	if err != nil {
@@ -440,12 +459,12 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 	fileSize, fileName := probeRemoteFile(downloadURL)
 
 	// --- Role-based limits ---
-	if !isAdmin {
+	if !isPremium {
 		dailyCount, _ := database.GetDailyTaskCount(telegramUserID)
 		if dailyCount >= maxDailyTasksNormal {
 			bh.editFinal(msg, fmt.Sprintf("🚫 <b>Daily limit reached!</b>\n\n"+
 				"You've used <b>%d/%d</b> downloads today.\n"+
-				"Try again tomorrow or contact an admin.",
+				"Contact an admin for premium unlimited access.",
 				dailyCount, maxDailyTasksNormal))
 			return nil
 		}
@@ -458,7 +477,7 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 			bh.editFinal(msg, fmt.Sprintf("🚫 <b>File too large!</b>\n\n"+
 				"📦 <b>File size:</b> %s\n"+
 				"📏 <b>Max allowed:</b> %s\n\n"+
-				"Contact an admin for larger files.",
+				"Contact an admin for premium unlimited access.",
 				formatSize(fileSize), formatSize(maxSize)))
 			return nil
 		}
@@ -707,28 +726,21 @@ func extractMedia(m *tele.Message) (fileID, fileName string, size int64, inputTy
 // processFile is the shared download → upload pipeline for any Telegram media.
 func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileSize int64, inputType string) error {
 	telegramUserID := c.Sender().ID
-	isAdmin := database.IsAdminTelegram(telegramUserID)
+	isPremium := database.IsPremiumTelegram(telegramUserID)
 
-	settings, err := database.GetSettings()
-	if err != nil {
-		return c.Send("❌ Internal error: Could not load settings.")
-	}
-
-	if settings.AccessToken == "" {
-		return c.Send("⚠️ Google Drive is not connected.\nPlease connect via the Dashboard.")
-	}
+	settings, _ := database.GetSettings()
 
 	if strings.TrimSpace(fileName) == "" {
 		fileName = fmt.Sprintf("file_%d", time.Now().Unix())
 	}
 
 	// --- Role-based limits ---
-	if !isAdmin {
+	if !isPremium {
 		dailyCount, _ := database.GetDailyTaskCount(telegramUserID)
 		if dailyCount >= maxDailyTasksNormal {
 			return c.Send(fmt.Sprintf("🚫 <b>Daily limit reached!</b>\n\n"+
 				"You've used <b>%d/%d</b> downloads today.\n"+
-				"Try again tomorrow or contact an admin.",
+				"Contact an admin for premium unlimited access.",
 				dailyCount, maxDailyTasksNormal), htmlOpts())
 		}
 
@@ -740,7 +752,7 @@ func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileS
 			return c.Send(fmt.Sprintf("🚫 <b>File too large!</b>\n\n"+
 				"📦 <b>Your file:</b> %s\n"+
 				"📏 <b>Max allowed:</b> %s\n\n"+
-				"Contact an admin for larger files.",
+				"Contact an admin for premium unlimited access.",
 				formatSize(fileSize), formatSize(maxSize)), htmlOpts())
 		}
 	}
