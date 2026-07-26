@@ -569,6 +569,12 @@ func (bh *BotHandler) handleDirectLink(c tele.Context, downloadURL string) error
 			progress := percentOf(uploaded, total)
 			database.UpdateTaskUploadProgress(taskID, progress, speed)
 
+			go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+				TaskID: taskID, FileName: fileName, FileSize: fileSize,
+				Status: "Uploading", Progress: progress, Speed: speed,
+				TelegramID: fmt.Sprintf("%d", msg.Sender.ID), TelegramUser: msg.Sender.Username,
+			})
+
 			eta := calcETA(total-uploaded, speed)
 			if total <= 0 {
 				eta = "unknown"
@@ -812,6 +818,13 @@ func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileS
 
 						progress := percentOf(maxSize, fileSize)
 						database.UpdateTaskDownloadProgress(taskID, progress, speed)
+
+						go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+							TaskID: taskID, FileName: fileName, FileSize: fileSize,
+							Status: "Downloading", Progress: progress, Speed: speed,
+							TelegramID: fmt.Sprintf("%d", c.Sender().ID), TelegramUser: c.Sender().Username,
+						})
+
 						eta := calcETA(fileSize-maxSize, speed)
 						bh.editMsg(msg, renderProgress("📥 Downloading", taskID, fileName, progress, speed, eta, startTime), cancelButton(taskID))
 
@@ -860,6 +873,13 @@ func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileS
 				lastUpdate = time.Now()
 				progress := percentOf(uploaded, total)
 				database.UpdateTaskUploadProgress(taskID, progress, speed)
+
+				go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+					TaskID: taskID, FileName: fileName, FileSize: fileSize,
+					Status: "Uploading", Progress: progress, Speed: speed,
+					TelegramID: fmt.Sprintf("%d", c.Sender().ID), TelegramUser: c.Sender().Username,
+				})
+
 				eta := calcETA(total-uploaded, speed)
 				bh.editMsg(msg, renderProgress("☁️ Uploading", taskID, fileName, progress, speed, eta, startTime), cancelButton(taskID))
 			})
@@ -905,6 +925,13 @@ func (bh *BotHandler) processFile(c tele.Context, fileID, fileName string, fileS
 				lastUpdate = time.Now()
 				progress := percentOf(uploaded, total)
 				database.UpdateTaskUploadProgress(taskID, progress, speed)
+
+				go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+					TaskID: taskID, FileName: fileName, FileSize: fileSize,
+					Status: "Uploading", Progress: progress, Speed: speed,
+					TelegramID: fmt.Sprintf("%d", c.Sender().ID), TelegramUser: c.Sender().Username,
+				})
+
 				eta := calcETA(total-uploaded, speed)
 				bh.editMsg(msg, renderProgress("☁️ Streaming to Drive", taskID, fileName, progress, speed, eta, startTime), cancelButton(taskID))
 			})
@@ -1113,6 +1140,13 @@ func (bh *BotHandler) startTorrentTask(c tele.Context, msg *tele.Message, telegr
 		lastUpload = time.Now()
 		progress := percentOf(uploaded, total)
 		database.UpdateTaskUploadProgress(taskID, progress, speed)
+
+		go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+			TaskID: taskID, FileName: uploadName, FileSize: total,
+			Status: "Uploading", Progress: progress, Speed: speed,
+			TelegramID: fmt.Sprintf("%d", msg.Sender.ID), TelegramUser: msg.Sender.Username,
+		})
+
 		eta := calcETA(total-uploaded, speed)
 		bh.editMsg(msg, renderProgress("☁️ Uploading to Drive", taskID, uploadName, progress, speed, eta, startTime), cancelButton(taskID))
 	})
@@ -1185,14 +1219,32 @@ func (bh *BotHandler) finishTask(msg *tele.Message, taskID int, fileName string,
 	database.UpdateTaskUploadProgress(taskID, 100, 0)
 	database.UpdateTaskStatus(taskID, "Completed", driveLink, driveFileID, finalElapsed)
 
+	// Notify worker that task is complete (remove from live tasks)
+	go uploader.SyncTaskProgressToWorker(bh.workerURL, bh.adminKey, uploader.LiveTaskProgressPayload{
+		TaskID: taskID, FileName: fileName, FileSize: fileSize,
+		Status: "Completed", Progress: 100, Speed: 0,
+		TelegramID: fmt.Sprintf("%d", msg.Chat.ID), TelegramUser: msg.Chat.Username,
+	})
+
 	var catalogID int = 0
 	if bh.workerURL != "" && driveFileID != "" {
-		sender := msg.Chat
-		senderName := strings.TrimSpace(sender.FirstName + " " + sender.LastName)
+		// Use msg.Sender if available (the actual user), fallback to msg.Chat
+		var senderName, senderUsername string
+		var senderID int64
+		if msg.Sender != nil {
+			senderName = strings.TrimSpace(msg.Sender.FirstName + " " + msg.Sender.LastName)
+			senderUsername = msg.Sender.Username
+			senderID = msg.Sender.ID
+		} else {
+			senderName = strings.TrimSpace(msg.Chat.FirstName + " " + msg.Chat.LastName)
+			senderUsername = msg.Chat.Username
+			senderID = msg.Chat.ID
+		}
 		if senderName == "" {
-			senderName = sender.Username
+			senderName = senderUsername
 		}
 
+		log.Printf("[Catalog Sync] Syncing '%s' to Worker (user: %s / tg:%d)", fileName, senderUsername, senderID)
 		syncRes, syncErr := uploader.SyncCatalogToWorker(bh.workerURL, bh.adminKey, uploader.CatalogSyncPayload{
 			Title:                fileName,
 			Type:                 "movie",
@@ -1200,11 +1252,14 @@ func (bh *BotHandler) finishTask(msg *tele.Message, taskID int, fileName string,
 			DriveLink:            driveLink,
 			FileSize:             fileSize,
 			UploadedByName:       senderName,
-			UploadedByUsername:   sender.Username,
-			UploadedByTelegramID: fmt.Sprintf("%d", sender.ID),
+			UploadedByUsername:   senderUsername,
+			UploadedByTelegramID: fmt.Sprintf("%d", senderID),
 		})
-		if syncErr == nil && syncRes != nil && syncRes.ID > 0 {
+		if syncErr != nil {
+			log.Printf("[Catalog Sync] ❌ FAILED to sync '%s' to Worker: %v", fileName, syncErr)
+		} else if syncRes != nil && syncRes.ID > 0 {
 			catalogID = syncRes.ID
+			log.Printf("[Catalog Sync] ✅ Synced '%s' → catalog ID %d", fileName, catalogID)
 		}
 	}
 
