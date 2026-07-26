@@ -20,8 +20,15 @@ type DriveUploader struct {
 	client *drive.Service
 }
 
-// NewDriveUploader creates a new uploader using the provided OAuth2 token
+// NewDriveUploader creates a new uploader using provided OAuth2 credentials with automatic token refresh
 func NewDriveUploader(ctx context.Context, token *oauth2.Token, clientID, clientSecret string) (*DriveUploader, error) {
+	if clientID == "" {
+		clientID = os.Getenv("GOOGLE_CLIENT_ID")
+	}
+	if clientSecret == "" {
+		clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+	}
+
 	config := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
@@ -32,9 +39,20 @@ func NewDriveUploader(ctx context.Context, token *oauth2.Token, clientID, client
 		Scopes: []string{drive.DriveFileScope},
 	}
 
-	client := config.Client(ctx, token)
+	// Create reusable TokenSource
+	tokenSource := config.TokenSource(ctx, token)
 
-	srv, err := drive.NewService(ctx, option.WithHTTPClient(client))
+	// Proactively verify & refresh token if expired
+	freshToken, err := tokenSource.Token()
+	if err == nil && freshToken != nil {
+		token = freshToken
+	} else if err != nil {
+		log.Printf("Notice: TokenSource refresh check: %v (attempting fallback)", err)
+	}
+
+	httpClient := oauth2.NewClient(ctx, config.TokenSource(ctx, token))
+
+	srv, err := drive.NewService(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +61,6 @@ func NewDriveUploader(ctx context.Context, token *oauth2.Token, clientID, client
 }
 
 // getOrCreateFolder finds a folder by name under the given parent, or creates it.
-// If parentID is empty, it searches in the root ("root").
 func (du *DriveUploader) getOrCreateFolder(folderName string, parentID string) (string, error) {
 	if parentID == "" {
 		parentID = "root"
@@ -140,7 +157,6 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 	folderID, err := du.getOrCreateFolder(defaultFolderName, "")
 	if err != nil {
 		log.Printf("Warning: could not get/create '%s' folder, uploading to root: %v", defaultFolderName, err)
-		// Fall back to uploading to root if folder creation fails
 		folderID = ""
 	}
 
@@ -167,7 +183,6 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 	// Fetch the full file metadata to get the WebViewLink
 	finalFile, err := du.client.Files.Get(res.Id).Fields("webViewLink").Do()
 	if err != nil {
-		// File is uploaded but we can't get the link — construct a fallback
 		log.Printf("Warning: could not fetch webViewLink for file %s: %v", res.Id, err)
 		fallbackLink := "https://drive.google.com/file/d/" + res.Id + "/view"
 		return fallbackLink, res.Id, nil
