@@ -347,12 +347,18 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = database.UpdateOAuthTokens(settings.ID, token.AccessToken, token.RefreshToken, token.Expiry)
+	existing, _ := database.GetSettings()
+	refreshTokenToSave := token.RefreshToken
+	if refreshTokenToSave == "" && existing.RefreshToken != "" {
+		refreshTokenToSave = existing.RefreshToken
+	}
+
+	err = database.UpdateOAuthTokens(settings.ID, token.AccessToken, refreshTokenToSave, token.Expiry)
 	if err != nil {
 		http.Error(w, "Failed to save tokens to database", http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect back to dashboard successfully
-	http.Redirect(w, r, "/#", http.StatusTemporaryRedirect)
+	// Redirect back to platform successfully
+	http.Redirect(w, r, "https://aurora-play.pages.dev/#/superadmin/gdrive?connected=true", http.StatusTemporaryRedirect)
 }
