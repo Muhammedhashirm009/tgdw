@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -148,7 +149,7 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 		f.Parents = []string{folderID}
 	}
 
-	res, err := du.client.Files.Create(f).Media(progressRdr).Context(ctx).Do()
+	res, err := du.client.Files.Create(f).Media(progressRdr, googleapi.ChunkSize(32*1024*1024)).Context(ctx).Do()
 	if err != nil {
 		return "", "", err
 	}
