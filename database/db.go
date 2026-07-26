@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -275,8 +276,18 @@ func GetDailyTaskCount(telegramUserID int64) (int, error) {
 	return count, err
 }
 
-// IsAdminTelegram checks if a Telegram user ID is in the admin list
+// IsAdminTelegram checks if a Telegram user ID is in the admin list or matches ADMIN_TELEGRAM_ID env
 func IsAdminTelegram(telegramUserID int64) bool {
+	envAdminID := os.Getenv("ADMIN_TELEGRAM_ID")
+	if envAdminID != "" {
+		userIDStr := strconv.FormatInt(telegramUserID, 10)
+		for _, idStr := range strings.Split(envAdminID, ",") {
+			if strings.TrimSpace(idStr) == userIDStr {
+				return true
+			}
+		}
+	}
+
 	settings, err := GetSettings()
 	if err != nil || settings.AdminTelegramIDs == "" {
 		return false
