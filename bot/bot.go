@@ -1271,18 +1271,31 @@ func (bh *BotHandler) finishTask(msg *tele.Message, taskID int, fileName string,
 		})
 		if syncErr != nil {
 			log.Printf("[Catalog Sync] ❌ FAILED to sync '%s' to Worker: %v", fileName, syncErr)
+			// Show error in Telegram for debugging
+			bh.bot.Send(msg.Chat, fmt.Sprintf("⚠️ <i>Catalog sync failed: %s</i>", syncErr.Error()), &tele.SendOptions{ParseMode: tele.ModeHTML})
 		} else if syncRes != nil && syncRes.ID > 0 {
 			catalogID = syncRes.ID
 			log.Printf("[Catalog Sync] ✅ Synced '%s' → catalog ID %d", fileName, catalogID)
 		}
 	}
 
+	var syncDebug string
+	if bh.workerURL == "" {
+		syncDebug = "\n⚠️ <i>Worker URL not configured</i>"
+	} else if driveFileID == "" {
+		syncDebug = "\n⚠️ <i>No Drive File ID — catalog sync skipped</i>"
+	}
+
 	completeText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n"+
 		"📄 <b>File:</b> <code>%s</code>\n"+
 		"📦 <b>Size:</b> %s\n"+
 		"⏱ <b>Time:</b> %s\n\n"+
-		"<code>[████████████████████] 100%%</code>",
-		esc(fileName), formatSize(fileSize), finalElapsed)
+		"<code>[████████████████████] 100%%</code>%s",
+		esc(fileName), formatSize(fileSize), finalElapsed, syncDebug)
+
+	if catalogID > 0 {
+		completeText += fmt.Sprintf("\n\n🎬 <b>Added to Aurora Play</b> (ID: %d)", catalogID)
+	}
 
 	menu := &tele.ReplyMarkup{}
 	var rows []tele.Row
