@@ -75,22 +75,22 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	}
 
 	// Step 2: Download the file
-	var downloadURL string
 	if tfd.APIBaseURL == "http://127.0.0.1:8081" {
-		// Local Bot API: files are stored locally, path is absolute
-		// Check if filePath is an absolute path (local server stores files on disk)
-		if filepath.IsAbs(filePath) {
-			// Direct file copy from local Bot API server storage
-			log.Printf("📂 Local file copy: %s -> %s", filePath, destPath)
-			return copyLocalFile(ctx, filePath, destPath, callback)
+		// Local Bot API stores files directly on disk under /var/lib/telegram-bot-api/bot<token>/<filePath>
+		localDiskPath := filePath
+		if !filepath.IsAbs(localDiskPath) {
+			localDiskPath = filepath.Join("/var/lib/telegram-bot-api", "bot"+tfd.BotToken, filePath)
 		}
-		downloadURL = fmt.Sprintf("%s/file/bot%s/%s", tfd.APIBaseURL, tfd.BotToken, filePath)
-	} else {
-		downloadURL = fmt.Sprintf("%s/file/bot%s/%s", tfd.APIBaseURL, tfd.BotToken, filePath)
+		if info, err := os.Stat(localDiskPath); err == nil && !info.IsDir() {
+			log.Printf("📂 Direct disk copy (max speed): %s -> %s (%d MB)", localDiskPath, destPath, info.Size()/(1024*1024))
+			return copyLocalFile(ctx, localDiskPath, destPath, callback)
+		}
+		downloadURL := fmt.Sprintf("%s/file/bot%s/%s", tfd.APIBaseURL, tfd.BotToken, filePath)
+		return DownloadHTTP(ctx, downloadURL, destDir, fileName, callback)
 	}
 
+	downloadURL := fmt.Sprintf("%s/file/bot%s/%s", tfd.APIBaseURL, tfd.BotToken, filePath)
 	log.Printf("📥 Downloading: %s", downloadURL)
-
 	return DownloadHTTP(ctx, downloadURL, destDir, fileName, callback)
 }
 
