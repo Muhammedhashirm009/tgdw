@@ -53,6 +53,7 @@ type PolledJob struct {
 	SourceInput        string `json:"sourceInput"`
 	DestinationDriveID string `json:"destinationDriveId"`
 	FileName           string `json:"fileName"`
+	FileSize           int64  `json:"fileSize"`
 	CancelRequested    int    `json:"cancelRequested"`
 }
 

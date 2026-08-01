@@ -51,7 +51,7 @@ type getFileResponse struct {
 }
 
 // DownloadByFileID downloads a Telegram file using Bot API getFile + download
-func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID, destDir, fileName string, callback ProgressCallback) (string, error) {
+func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID, destDir, fileName string, knownFileSize int64, callback ProgressCallback) (string, error) {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return "", err
 	}
@@ -69,7 +69,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 		go func() {
 			var lastSize int64
 			lastTime := time.Now()
-			ticker := time.NewTicker(time.Second)
+			ticker := time.NewTicker(3 * time.Second)
 			defer ticker.Stop()
 			for {
 				select {
@@ -92,7 +92,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 						if elapsed > 0 && maxSize > lastSize {
 							speed = int64(float64(maxSize-lastSize) / elapsed)
 						}
-						callback(maxSize, 0, speed)
+						callback(maxSize, knownFileSize, speed)
 						lastSize = maxSize
 						lastTime = now
 					}
@@ -178,7 +178,7 @@ func copyLocalFile(ctx context.Context, src, dst string, callback ProgressCallba
 			copied += int64(n)
 
 			now := time.Now()
-			if callback != nil && now.Sub(lastReport) >= time.Second {
+			if callback != nil && now.Sub(lastReport) >= 3*time.Second {
 				speed := int64(float64(copied-lastReportBytes) / now.Sub(lastReport).Seconds())
 				callback(copied, totalSize, speed)
 				lastReport = now

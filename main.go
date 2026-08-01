@@ -180,7 +180,7 @@ func processJob(job *uploader.PolledJob) {
 			fileName = "telegram_file_" + job.ID
 		}
 
-		downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName,
+		downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize,
 			func(downloaded, total, speed int64) {
 				pct := 0.0
 				var eta int64 = 0
