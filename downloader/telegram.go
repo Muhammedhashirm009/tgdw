@@ -57,21 +57,53 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	}
 	destPath := filepath.Join(destDir, fileName)
 
-	// Step 1: Call getFile to get the file_path
-	getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", tfd.APIBaseURL, tfd.BotToken, fileID)
-	log.Printf("📲 getFile: %s", getFileURL)
-
-	resp, err := http.Get(getFileURL)
-	if err != nil {
-		return "", fmt.Errorf("getFile request failed: %w", err)
+	// Step 1: Call getFile to get the file_path with 3x retry & fallback
+	var filePath string
+	var lastErr error
+	apiServers := []string{tfd.APIBaseURL}
+	if tfd.APIBaseURL != "https://api.telegram.org" {
+		apiServers = append(apiServers, "https://api.telegram.org")
 	}
-	defer resp.Body.Close()
 
-	// Parse JSON response manually to avoid importing encoding/json just for this
-	body, _ := io.ReadAll(resp.Body)
-	filePath := extractJSONString(body, "file_path")
+	for _, server := range apiServers {
+		for attempt := 1; attempt <= 3; attempt++ {
+			getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", server, tfd.BotToken, fileID)
+			req, err := http.NewRequestWithContext(ctx, "GET", getFileURL, nil)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				lastErr = err
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+				continue
+			}
+
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			filePath = extractJSONString(body, "file_path")
+			if filePath != "" {
+				tfd.APIBaseURL = server
+				break
+			}
+
+			lastErr = fmt.Errorf("getFile failed (status %d): %s", resp.StatusCode, string(body[:min(len(body), 150)]))
+			if resp.StatusCode == 429 {
+				time.Sleep(time.Duration(attempt*4) * time.Second)
+			} else {
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
+		}
+		if filePath != "" {
+			break
+		}
+	}
+
 	if filePath == "" {
-		return "", fmt.Errorf("getFile failed or file_path empty. Response: %s", string(body[:min(len(body), 200)]))
+		return "", fmt.Errorf("getFile failed after retries: %v", lastErr)
 	}
 
 	// Step 2: Download the file
