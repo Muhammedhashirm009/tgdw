@@ -70,16 +70,24 @@ func main() {
 			len(workerConfig.GDriveAccounts), workerConfig.MaxConcurrentJobs)
 	}
 
-	// 4. Job Polling Ticker Loop
+	// 4. Job Polling Ticker Loop with Strict Local Concurrency Enforcement
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
+		ticker := time.NewTicker(2 * time.Second)
 		for range ticker.C {
+			maxAllowed := 2
+			if workerConfig != nil && workerConfig.MaxConcurrentJobs > 0 {
+				maxAllowed = workerConfig.MaxConcurrentJobs
+			}
+			if daemon.ActiveJobs >= maxAllowed {
+				continue // Worker is at capacity; do not poll until a slot opens up
+			}
+
 			job, err := daemon.PollNextJob()
 			if err != nil || job == nil {
 				continue
 			}
 
-			log.Printf("📥 Job Received: ID=%s Type=%s", job.ID, job.JobType)
+			log.Printf("📥 Job Received: ID=%s Type=%s (Active: %d/%d)", job.ID, job.JobType, daemon.ActiveJobs+1, maxAllowed)
 			daemon.ActiveJobs++
 
 			go processJob(job)
