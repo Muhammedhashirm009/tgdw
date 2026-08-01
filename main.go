@@ -209,22 +209,27 @@ func processJob(job *uploader.PolledJob) {
 	log.Printf("📥 Downloaded: %s", downloadedPath)
 	daemon.SendJobProgress(job.ID, "uploading", 50.0, 0, 0, 0, 0)
 
-	// Upload to Google Drive
-	// Try to get GDrive credentials from config or env
+	// Upload to Google Drive — Multi-Account Availability Loop
 	var driveUploader *uploader.DriveUploader
+	var activeAccounts []*uploader.DriveUploader
 
 	if workerConfig != nil && len(workerConfig.GDriveAccounts) > 0 {
-		acct := workerConfig.GDriveAccounts[0]
-		token := &oauth2.Token{
-			AccessToken:  acct.AccessToken,
-			RefreshToken: acct.RefreshToken,
-			TokenType:    "Bearer",
-			Expiry:       time.Now().Add(-time.Hour), // Force token refresh
+		for _, acct := range workerConfig.GDriveAccounts {
+			token := &oauth2.Token{
+				AccessToken:  acct.AccessToken,
+				RefreshToken: acct.RefreshToken,
+				TokenType:    "Bearer",
+				Expiry:       time.Now().Add(-time.Hour), // Force token refresh
+			}
+			uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, acct.ClientID, acct.ClientSecret)
+			if uErr == nil {
+				activeAccounts = append(activeAccounts, uploaderInst)
+			} else {
+				log.Printf("⚠️ GDrive account '%s' auth failed: %v, trying next account", acct.Email, uErr)
+			}
 		}
-		var uErr error
-		driveUploader, uErr = uploader.NewDriveUploader(ctx, token, acct.ClientID, acct.ClientSecret)
-		if uErr != nil {
-			log.Printf("⚠️ GDrive auth from config failed: %v, trying env vars", uErr)
+		if len(activeAccounts) > 0 {
+			driveUploader = activeAccounts[0]
 		}
 	}
 
@@ -253,6 +258,7 @@ func processJob(job *uploader.PolledJob) {
 			daemon.SendJobFail(job.ID, "GDrive auth failed: "+uErr.Error())
 			return
 		}
+		activeAccounts = append(activeAccounts, driveUploader)
 	}
 
 	// Get file info
@@ -263,21 +269,31 @@ func processJob(job *uploader.PolledJob) {
 	}
 	fileName := filepath.Base(downloadedPath)
 
-	webLink, fileId, uploadErr := driveUploader.UploadFile(ctx, downloadedPath, fileName,
-		func(uploaded, total, speed int64) {
-			pct := 50.0
-			var eta int64 = 0
-			if total > 0 {
-				pct = 50.0 + (float64(uploaded) / float64(total) * 50.0) // Upload is 50-100%
-				if speed > 0 && total > uploaded {
-					eta = (total - uploaded) / speed
+	var webLink, fileId string
+	var uploadErr error
+
+	for idx, uploaderAcc := range activeAccounts {
+		webLink, fileId, uploadErr = uploaderAcc.UploadFile(ctx, downloadedPath, fileName,
+			func(uploaded, total, speed int64) {
+				pct := 50.0
+				var eta int64 = 0
+				if total > 0 {
+					pct = 50.0 + (float64(uploaded) / float64(total) * 50.0) // Upload is 50-100%
+					if speed > 0 && total > uploaded {
+						eta = (total - uploaded) / speed
+					}
 				}
-			}
-			daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
-		})
+				daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
+			})
+
+		if uploadErr == nil {
+			break
+		}
+		log.Printf("⚠️ Upload failed on GDrive account #%d: %v (trying next active account)", idx+1, uploadErr)
+	}
 
 	if uploadErr != nil {
-		log.Printf("❌ Upload failed for job %s: %v", job.ID, uploadErr)
+		log.Printf("❌ Upload failed for job %s across all active accounts: %v", job.ID, uploadErr)
 		daemon.SendJobFail(job.ID, "Upload failed: "+uploadErr.Error())
 		return
 	}
