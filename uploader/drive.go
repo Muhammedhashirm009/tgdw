@@ -134,8 +134,11 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	now := time.Now()
 	elapsed := now.Sub(pr.lastReportTime)
 
-	if elapsed >= time.Second && pr.callback != nil {
-		speed := int64(float64(pr.uploaded-pr.lastReportedUploaded) / elapsed.Seconds())
+	if (elapsed >= time.Second || err == io.EOF || pr.uploaded == pr.total) && pr.callback != nil {
+		speed := int64(0)
+		if elapsed.Seconds() > 0 {
+			speed = int64(float64(pr.uploaded-pr.lastReportedUploaded) / elapsed.Seconds())
+		}
 		pr.callback(pr.uploaded, pr.total, speed)
 		pr.lastReportTime = now
 		pr.lastReportedUploaded = pr.uploaded
@@ -183,7 +186,7 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 		f.Parents = []string{folderID}
 	}
 
-	res, err := du.client.Files.Create(f).Media(progressRdr, googleapi.ChunkSize(64*1024*1024)).Context(ctx).Do()
+	res, err := du.client.Files.Create(f).Media(progressRdr, googleapi.ChunkSize(32*1024*1024)).Context(ctx).Do()
 	if err != nil {
 		return "", "", err
 	}
