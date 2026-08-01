@@ -355,31 +355,3 @@ func (d *WorkerDaemon) FetchConfig() (*WorkerConfig, error) {
 
 	return &config, nil
 }
-
-// SendJobFail notifies Control Plane of job failure
-func (d *WorkerDaemon) SendJobFail(jobID, errorMessage string) {
-	if d.Creds == nil {
-		return
-	}
-
-	payload := map[string]interface{}{
-		"jobId":        jobID,
-		"errorMessage": errorMessage,
-	}
-
-	bodyBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", d.Creds.ControlPlaneURL+"/api/workers/jobs/fail", bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Worker-ID", d.Creds.WorkerID)
-	req.Header.Set("X-API-Key", d.Creds.APIKey)
-	req.Header.Set("X-API-Secret", d.Creds.APISecret)
-
-	resp, err := d.HTTPClient.Do(req)
-	if err == nil {
-		resp.Body.Close()
-	}
-}
