@@ -188,25 +188,19 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 		return "", "", err
 	}
 
-	// Create permission to make it shareable
-	perm := &drive.Permission{
-		Type: "anyone",
-		Role: "reader",
-	}
-	_, err = du.client.Permissions.Create(res.Id, perm).Do()
-	if err != nil {
-		log.Printf("Warning: file uploaded but failed to set public permission: %v", err)
-	}
+	// Asynchronously set public permission without blocking the job completion
+	go func(fID string) {
+		perm := &drive.Permission{
+			Type: "anyone",
+			Role: "reader",
+		}
+		if _, pErr := du.client.Permissions.Create(fID, perm).Do(); pErr != nil {
+			log.Printf("Notice: async permission set for %s: %v", fID, pErr)
+		}
+	}(res.Id)
 
-	// Fetch the full file metadata to get the WebViewLink
-	finalFile, err := du.client.Files.Get(res.Id).Fields("id, webViewLink").Do()
-	if err != nil {
-		log.Printf("Warning: could not fetch webViewLink for file %s: %v", res.Id, err)
-		fallbackLink := "https://drive.google.com/file/d/" + res.Id + "/view"
-		return fallbackLink, res.Id, nil
-	}
-
-	return finalFile.WebViewLink, finalFile.Id, nil
+	driveLink := "https://drive.google.com/file/d/" + res.Id + "/view"
+	return driveLink, res.Id, nil
 }
 
 func (du *DriveUploader) DeleteFile(fileID string) error {
