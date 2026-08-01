@@ -48,13 +48,14 @@ type HeartbeatPayload struct {
 }
 
 type PolledJob struct {
-	ID                 string `json:"id"`
-	JobType            string `json:"jobType"`
-	SourceInput        string `json:"sourceInput"`
-	DestinationDriveID string `json:"destinationDriveId"`
-	FileName           string `json:"fileName"`
-	FileSize           int64  `json:"fileSize"`
-	CancelRequested    int    `json:"cancelRequested"`
+	ID                 string                    `json:"id"`
+	JobType            string                    `json:"jobType"`
+	SourceInput        string                    `json:"sourceInput"`
+	DestinationDriveID string                    `json:"destinationDriveId"`
+	GDriveAccount      *GDriveAccountCredential `json:"gdriveAccount"`
+	FileName           string                    `json:"fileName"`
+	FileSize           int64                     `json:"fileSize"`
+	CancelRequested    int                       `json:"cancelRequested"`
 }
 
 type PollJobResponse struct {

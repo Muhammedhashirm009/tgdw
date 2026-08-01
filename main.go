@@ -241,12 +241,32 @@ func processJob(job *uploader.PolledJob) {
 
 	daemon.SendJobProgress(job.ID, "uploading", 0.0, 0, fileSize, 0, 0)
 
-	// Upload to Google Drive — Multi-Account Availability Loop
-	var driveUploader *uploader.DriveUploader
+	// Upload to Google Drive — Job-Assigned Round-Robin Account Protocol
 	var activeAccounts []*uploader.DriveUploader
 
+	// Primary: Use job-assigned account from Control Plane's Round-Robin load balancer
+	if job.GDriveAccount != nil && job.GDriveAccount.RefreshToken != "" {
+		token := &oauth2.Token{
+			AccessToken:  job.GDriveAccount.AccessToken,
+			RefreshToken: job.GDriveAccount.RefreshToken,
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Hour), // Force token refresh
+		}
+		uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, job.GDriveAccount.ClientID, job.GDriveAccount.ClientSecret)
+		if uErr == nil {
+			activeAccounts = append(activeAccounts, uploaderInst)
+			log.Printf("🎯 Assigned GDrive account: %s (%s)", job.GDriveAccount.Email, job.GDriveAccount.ID)
+		} else {
+			log.Printf("⚠️ GDrive assigned account '%s' auth error: %v", job.GDriveAccount.Email, uErr)
+		}
+	}
+
+	// Secondary: Include all other active accounts for failover
 	if workerConfig != nil && len(workerConfig.GDriveAccounts) > 0 {
 		for _, acct := range workerConfig.GDriveAccounts {
+			if job.GDriveAccount != nil && acct.ID == job.GDriveAccount.ID {
+				continue // already added
+			}
 			token := &oauth2.Token{
 				AccessToken:  acct.AccessToken,
 				RefreshToken: acct.RefreshToken,
@@ -256,41 +276,13 @@ func processJob(job *uploader.PolledJob) {
 			uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, acct.ClientID, acct.ClientSecret)
 			if uErr == nil {
 				activeAccounts = append(activeAccounts, uploaderInst)
-			} else {
-				log.Printf("⚠️ GDrive account '%s' auth failed: %v, trying next account", acct.Email, uErr)
 			}
-		}
-		if len(activeAccounts) > 0 {
-			driveUploader = activeAccounts[0]
 		}
 	}
 
-	// Fallback to env vars
-	if driveUploader == nil {
-		accessToken := os.Getenv("GDRIVE_ACCESS_TOKEN")
-		refreshToken := os.Getenv("GDRIVE_REFRESH_TOKEN")
-		clientID := os.Getenv("GOOGLE_CLIENT_ID")
-		clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
-
-		if refreshToken == "" {
-			daemon.SendJobFail(job.ID, "No Google Drive credentials available")
-			return
-		}
-
-		token := &oauth2.Token{
-			AccessToken:  accessToken,
-			RefreshToken: refreshToken,
-			TokenType:    "Bearer",
-			Expiry:       time.Now().Add(-time.Hour), // Force token refresh
-		}
-
-		var uErr error
-		driveUploader, uErr = uploader.NewDriveUploader(ctx, token, clientID, clientSecret)
-		if uErr != nil {
-			daemon.SendJobFail(job.ID, "GDrive auth failed: "+uErr.Error())
-			return
-		}
-		activeAccounts = append(activeAccounts, driveUploader)
+	if len(activeAccounts) == 0 {
+		daemon.SendJobFail(job.ID, "No active Google Drive storage account available")
+		return
 	}
 
 	var webLink, fileId string
