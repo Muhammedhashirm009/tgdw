@@ -23,14 +23,14 @@ var fastClient = &http.Client{
 			Timeout:   15 * time.Second,
 			KeepAlive: 60 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          200,
-		MaxIdleConnsPerHost:   50,
+		MaxIdleConns:          500,
+		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
-		ReadBufferSize:        4 * 1024 * 1024, // 4MB Buffer
-		WriteBufferSize:       4 * 1024 * 1024, // 4MB Buffer
+		ReadBufferSize:        8 * 1024 * 1024, // 8MB Socket Read Buffer
+		WriteBufferSize:       8 * 1024 * 1024, // 8MB Socket Write Buffer
 	},
 }
 
@@ -67,8 +67,8 @@ func DownloadHTTP(ctx context.Context, url string, destDir string, filename stri
 	}
 	defer out.Close()
 
-	// High-speed 4MB read buffer
-	buf := make([]byte, 4*1024*1024)
+	// High-speed 8MB read buffer
+	buf := make([]byte, 8*1024*1024)
 	var downloaded int64
 	var lastReportedDownloaded int64
 	lastReportTime := time.Now()
