@@ -79,12 +79,22 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 					var maxSize int64
 					filepath.Walk("/var/lib/telegram-bot-api", func(p string, info os.FileInfo, err error) error {
 						if err == nil && !info.IsDir() && time.Since(info.ModTime()) < 15*time.Second {
-							if info.Size() > maxSize {
-								maxSize = info.Size()
+							if knownFileSize > 0 {
+								// Match files bounded by target size (+1MB padding) so concurrent downloads don't mix up
+								if info.Size() <= knownFileSize+1024*1024 && info.Size() > maxSize {
+									maxSize = info.Size()
+								}
+							} else {
+								if info.Size() > maxSize {
+									maxSize = info.Size()
+								}
 							}
 						}
 						return nil
 					})
+					if knownFileSize > 0 && maxSize > knownFileSize {
+						maxSize = knownFileSize
+					}
 					if maxSize > 0 {
 						now := time.Now()
 						elapsed := now.Sub(lastTime).Seconds()
