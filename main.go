@@ -219,6 +219,7 @@ func processJob(job *uploader.PolledJob) {
 			AccessToken:  acct.AccessToken,
 			RefreshToken: acct.RefreshToken,
 			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Hour), // Force token refresh
 		}
 		var uErr error
 		driveUploader, uErr = uploader.NewDriveUploader(ctx, token, acct.ClientID, acct.ClientSecret)
@@ -243,6 +244,7 @@ func processJob(job *uploader.PolledJob) {
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,
 			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Hour), // Force token refresh
 		}
 
 		var uErr error
