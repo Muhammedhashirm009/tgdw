@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -50,7 +52,23 @@ func NewDriveUploader(ctx context.Context, token *oauth2.Token, clientID, client
 		log.Printf("Notice: TokenSource refresh check: %v (attempting fallback)", err)
 	}
 
-	httpClient := oauth2.NewClient(ctx, config.TokenSource(ctx, token))
+	highSpeedTransport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 60 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   50,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+		ReadBufferSize:        4 * 1024 * 1024, // 4MB Buffer
+		WriteBufferSize:       4 * 1024 * 1024, // 4MB Buffer
+	}
+	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: highSpeedTransport})
+	httpClient := oauth2.NewClient(ctxWithClient, config.TokenSource(ctxWithClient, token))
 
 	srv, err := drive.NewService(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {

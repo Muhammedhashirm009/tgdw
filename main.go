@@ -183,12 +183,16 @@ func processJob(job *uploader.PolledJob) {
 		downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName,
 			func(downloaded, total, speed int64) {
 				pct := 0.0
+				var eta int64 = 0
 				if total > 0 {
 					pct = float64(downloaded) / float64(total) * 50.0
+					if speed > 0 && total > downloaded {
+						eta = (total - downloaded) / speed
+					}
 				} else if downloaded > 0 {
 					pct = 25.0
 				}
-				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, 0)
+				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
 			})
 
 	default:
@@ -260,10 +264,14 @@ func processJob(job *uploader.PolledJob) {
 	webLink, fileId, uploadErr := driveUploader.UploadFile(ctx, downloadedPath, fileName,
 		func(uploaded, total, speed int64) {
 			pct := 50.0
+			var eta int64 = 0
 			if total > 0 {
 				pct = 50.0 + (float64(uploaded) / float64(total) * 50.0) // Upload is 50-100%
+				if speed > 0 && total > uploaded {
+					eta = (total - uploaded) / speed
+				}
 			}
-			daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, 0)
+			daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
 		})
 
 	if uploadErr != nil {
