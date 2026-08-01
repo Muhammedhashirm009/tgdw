@@ -164,12 +164,40 @@ func processJob(job *uploader.PolledJob) {
 		}
 
 	case "telegram_file":
-		// For telegram files, the sourceInput is a file_id
-		// The bot should download via Telegram Bot API, but since this worker
-		// doesn't have the bot token, we skip telegram_file for now
-		// and report it as unsupported in V2 worker
-		daemon.SendJobFail(job.ID, "telegram_file downloads require bot token - not yet supported in V2 worker")
-		return
+		// Download via Telegram MTProto (supports files of any size)
+		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+		apiID := os.Getenv("TELEGRAM_API_ID")
+		apiHash := os.Getenv("TELEGRAM_API_HASH")
+
+		if botToken == "" || apiID == "" || apiHash == "" {
+			daemon.SendJobFail(job.ID, "Missing TELEGRAM_BOT_TOKEN, TELEGRAM_API_ID, or TELEGRAM_API_HASH env vars")
+			return
+		}
+
+		tgDl, tgErr := downloader.NewTelegramFileDownloader(botToken, apiID, apiHash)
+		if tgErr != nil {
+			daemon.SendJobFail(job.ID, "Failed to init Telegram downloader: "+tgErr.Error())
+			return
+		}
+
+		daemon.SendJobProgress(job.ID, "downloading", 5.0, 0, 0, 0, 0)
+
+		fileName := job.FileName
+		if fileName == "" {
+			fileName = "telegram_file_" + job.ID
+		}
+
+		downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName,
+			func(downloaded, total, speed int64) {
+				pct := 0.0
+				if total > 0 {
+					pct = float64(downloaded) / float64(total) * 50.0
+				} else if downloaded > 0 {
+					// Unknown total, estimate based on downloaded bytes
+					pct = 25.0 // Show some progress
+				}
+				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, 0)
+			})
 
 	default:
 		daemon.SendJobFail(job.ID, "Unknown job type: "+job.JobType)
