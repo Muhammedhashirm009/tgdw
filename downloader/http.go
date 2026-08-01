@@ -85,9 +85,12 @@ func DownloadHTTP(ctx context.Context, url string, destDir string, filename stri
 			now := time.Now()
 			elapsed := now.Sub(lastReportTime)
 
-			// Compute speed and trigger callback every 1 second
-			if elapsed >= time.Second && callback != nil {
-				speed := int64(float64(downloaded-lastReportedDownloaded) / elapsed.Seconds())
+			// Compute speed and trigger callback every 3 seconds or on EOF
+			if (elapsed >= 3*time.Second || err == io.EOF) && callback != nil {
+				speed := int64(0)
+				if elapsed.Seconds() > 0 {
+					speed = int64(float64(downloaded-lastReportedDownloaded) / elapsed.Seconds())
+				}
 				callback(downloaded, totalSize, speed)
 				lastReportTime = now
 				lastReportedDownloaded = downloaded

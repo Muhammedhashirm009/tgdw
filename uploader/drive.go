@@ -134,7 +134,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	now := time.Now()
 	elapsed := now.Sub(pr.lastReportTime)
 
-	if (elapsed >= time.Second || err == io.EOF || pr.uploaded == pr.total) && pr.callback != nil {
+	if (elapsed >= 3*time.Second || err == io.EOF || pr.uploaded == pr.total) && pr.callback != nil {
 		speed := int64(0)
 		if elapsed.Seconds() > 0 {
 			speed = int64(float64(pr.uploaded-pr.lastReportedUploaded) / elapsed.Seconds())
