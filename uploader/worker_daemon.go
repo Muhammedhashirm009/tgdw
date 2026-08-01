@@ -52,6 +52,8 @@ type PolledJob struct {
 	JobType            string `json:"jobType"`
 	SourceInput        string `json:"sourceInput"`
 	DestinationDriveID string `json:"destinationDriveId"`
+	FileName           string `json:"fileName"`
+	CancelRequested    int    `json:"cancelRequested"`
 }
 
 type PollJobResponse struct {
@@ -264,6 +266,109 @@ func (d *WorkerDaemon) SendJobComplete(jobID, driveFileID string, fileSize int64
 
 	bodyBytes, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", d.Creds.ControlPlaneURL+"/api/workers/jobs/complete", bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Worker-ID", d.Creds.WorkerID)
+	req.Header.Set("X-API-Key", d.Creds.APIKey)
+	req.Header.Set("X-API-Secret", d.Creds.APISecret)
+
+	resp, err := d.HTTPClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+// SendJobFail notifies Control Plane of job failure
+func (d *WorkerDaemon) SendJobFail(jobID, errorMessage string) {
+	if d.Creds == nil {
+		return
+	}
+
+	payload := map[string]interface{}{
+		"jobId":        jobID,
+		"errorMessage": errorMessage,
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", d.Creds.ControlPlaneURL+"/api/workers/jobs/fail", bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Worker-ID", d.Creds.WorkerID)
+	req.Header.Set("X-API-Key", d.Creds.APIKey)
+	req.Header.Set("X-API-Secret", d.Creds.APISecret)
+
+	resp, err := d.HTTPClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+type WorkerConfig struct {
+	WorkerID          string              `json:"workerId"`
+	HeartbeatInterval int                 `json:"heartbeatInterval"`
+	MaxConcurrentJobs int                 `json:"maxConcurrentJobs"`
+	GDriveAccounts    []GDriveAccountCred `json:"gdriveAccounts"`
+	UploadChunkSize   int64               `json:"uploadChunkSize"`
+}
+
+type GDriveAccountCred struct {
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+// FetchConfig fetches worker configuration from Control Plane
+func (d *WorkerDaemon) FetchConfig() (*WorkerConfig, error) {
+	if d.Creds == nil {
+		return nil, fmt.Errorf("worker not authenticated")
+	}
+
+	req, err := http.NewRequest("GET", d.Creds.ControlPlaneURL+"/api/workers/config", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-Worker-ID", d.Creds.WorkerID)
+	req.Header.Set("X-API-Key", d.Creds.APIKey)
+	req.Header.Set("X-API-Secret", d.Creds.APISecret)
+
+	resp, err := d.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	var config WorkerConfig
+	if err := json.Unmarshal(respBytes, &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+// SendJobFail notifies Control Plane of job failure
+func (d *WorkerDaemon) SendJobFail(jobID, errorMessage string) {
+	if d.Creds == nil {
+		return
+	}
+
+	payload := map[string]interface{}{
+		"jobId":        jobID,
+		"errorMessage": errorMessage,
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", d.Creds.ControlPlaneURL+"/api/workers/jobs/fail", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return
 	}
