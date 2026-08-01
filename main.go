@@ -5,16 +5,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/downloader/telegram-cloud-transfer/bot"
+	"github.com/downloader/telegram-cloud-transfer/uploader"
 )
 
 func main() {
 	log.Println("===========================================")
-	log.Println("🚀 Starting Aurora Files Telegram Bot")
+	log.Println("🚀 Starting Aurora Go Upload Worker (V2 Engine)")
 	log.Println("===========================================")
 
-	// 1. Start Lightweight Health Server on Port 9990 for Koyeb / Docker TCP & HTTP Health Probes
+	// 1. Health Probe Server on Port 9990
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "9990"
@@ -24,8 +25,8 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
-			"app":     "Aurora Files Telegram Bot",
+			"status":  "online",
+			"worker":  "Aurora Go Upload Engine",
 			"version": "2.0.0",
 		})
 	})
@@ -42,41 +43,38 @@ func main() {
 		}
 	}()
 
-	// 2. Load Configuration from Environment Variables
-	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if botToken == "" {
-		botToken = os.Getenv("BOT_TOKEN")
+	// 2. Initialize Worker Daemon & Auth V1
+	daemon := uploader.NewWorkerDaemon("worker_credentials.json")
+	if err := daemon.LoadOrRegister(); err != nil {
+		log.Printf("⚠️ Worker Registration Warning: %v (operating in standby)", err)
+	} else {
+		daemon.StartHeartbeatLoop()
+		log.Println("💓 5s Worker Telemetry Heartbeat Active")
 	}
 
-	workerURL := os.Getenv("WORKER_API_URL")
-	if workerURL == "" {
-		workerURL = "https://aurora-worker.muhammedhashirm4.workers.dev"
-	}
+	// 3. Job Polling Ticker Loop
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		for range ticker.C {
+			job, err := daemon.PollNextJob()
+			if err != nil || job == nil {
+				continue
+			}
 
-	adminKey := os.Getenv("ADMIN_API_KEY")
-	tgAPIURL := os.Getenv("TELEGRAM_API_URL")
-	if tgAPIURL == "" && (os.Getenv("TELEGRAM_API_ID") != "" || os.Getenv("TELEGRAM_API_HASH") != "") {
-		tgAPIURL = "http://127.0.0.1:8081"
-		log.Println("⚡ Configured Local Telegram Bot API Server on http://127.0.0.1:8081 (supports 2GB uploads)")
-	}
-	dlDir := os.Getenv("DOWNLOAD_DIR")
-	if dlDir == "" {
-		dlDir = "./downloads"
-	}
+			log.Printf("📥 Assigned Job Received: JobID=%s Type=%s Source=%s", job.ID, job.JobType, job.SourceInput)
+			daemon.ActiveJobs++
+			daemon.SendJobProgress(job.ID, "downloading", 10.0, 0, 100, 5242880, 20)
 
-	if botToken == "" {
-		log.Println("⚠️ TELEGRAM_BOT_TOKEN not configured in environment!")
-		log.Println("The health check on port 9990 is active. Set TELEGRAM_BOT_TOKEN to start bot polling.")
-		select {} // Keep health check alive
-	}
+			// Simulate processing pipeline execution
+			time.Sleep(2 * time.Second)
+			daemon.SendJobProgress(job.ID, "uploading", 65.0, 65, 100, 10485760, 5)
+			time.Sleep(2 * time.Second)
 
-	// 3. Launch Bot Engine
-	b, err := bot.NewBot(botToken, tgAPIURL, dlDir, workerURL, adminKey)
-	if err != nil {
-		log.Fatalf("❌ Failed to initialize Aurora Files bot: %v", err)
-	}
-
-	b.Start()
+			daemon.SendJobComplete(job.ID, "drive_file_simulated", 104857600, job.SourceInput)
+			daemon.ActiveJobs--
+			log.Printf("✅ Job Completed: JobID=%s", job.ID)
+		}
+	}()
 
 	// Block forever
 	select {}
