@@ -61,60 +61,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", tfd.APIBaseURL, tfd.BotToken, fileID)
 	log.Printf("📲 getFile: %s", getFileURL)
 
-	// For local Bot API, track disk writes in /var/lib/telegram-bot-api while getFile blocks
-	var stopTracker context.CancelFunc
-	if tfd.APIBaseURL == "http://127.0.0.1:8081" && callback != nil {
-		trackCtx, cancel := context.WithCancel(ctx)
-		stopTracker = cancel
-		go func() {
-			var lastSize int64
-			lastTime := time.Now()
-			ticker := time.NewTicker(3 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-trackCtx.Done():
-					return
-				case <-ticker.C:
-					var maxSize int64
-					filepath.Walk("/var/lib/telegram-bot-api", func(p string, info os.FileInfo, err error) error {
-						if err == nil && !info.IsDir() && time.Since(info.ModTime()) < 15*time.Second {
-							if knownFileSize > 0 {
-								// Match files bounded by target size (+1MB padding) so concurrent downloads don't mix up
-								if info.Size() <= knownFileSize+1024*1024 && info.Size() > maxSize {
-									maxSize = info.Size()
-								}
-							} else {
-								if info.Size() > maxSize {
-									maxSize = info.Size()
-								}
-							}
-						}
-						return nil
-					})
-					if knownFileSize > 0 && maxSize > knownFileSize {
-						maxSize = knownFileSize
-					}
-					if maxSize > 0 {
-						now := time.Now()
-						elapsed := now.Sub(lastTime).Seconds()
-						speed := int64(0)
-						if elapsed > 0 && maxSize > lastSize {
-							speed = int64(float64(maxSize-lastSize) / elapsed)
-						}
-						callback(maxSize, knownFileSize, speed)
-						lastSize = maxSize
-						lastTime = now
-					}
-				}
-			}
-		}()
-	}
-
 	resp, err := http.Get(getFileURL)
-	if stopTracker != nil {
-		stopTracker()
-	}
 	if err != nil {
 		return "", fmt.Errorf("getFile request failed: %w", err)
 	}
