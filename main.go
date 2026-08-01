@@ -134,15 +134,22 @@ func processJob(job *uploader.PolledJob) {
 
 		downloadedPath, dlErr = downloader.DownloadHTTP(ctx, job.SourceInput, tmpDir, fileName,
 			func(downloaded, total, speed int64) {
-				pct := 0.0
-				if total > 0 {
-					pct = float64(downloaded) / float64(total) * 50.0 // Download is 0-50%
+				if total <= 0 && job.FileSize > 0 {
+					total = job.FileSize
 				}
-				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, 0)
+				pct := 0.0
+				var eta int64 = 0
+				if total > 0 {
+					pct = float64(downloaded) / float64(total) * 100.0
+					if speed > 0 && total > downloaded {
+						eta = (total - downloaded) / speed
+					}
+				}
+				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
 			})
 
 	case "torrent_magnet":
-		daemon.SendJobProgress(job.ID, "downloading", 2.0, 0, 0, 0, 0)
+		daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, 0, 0, 0)
 
 		td, tdErr := downloader.NewTorrentDownloader(tmpDir)
 		if tdErr != nil {
@@ -153,11 +160,18 @@ func processJob(job *uploader.PolledJob) {
 
 		downloadedPath, dlErr = td.DownloadMagnet(ctx, job.SourceInput,
 			func(name string, completed, total, speed int64, peers int) {
-				pct := 0.0
-				if total > 0 {
-					pct = float64(completed) / float64(total) * 50.0
+				if total <= 0 && job.FileSize > 0 {
+					total = job.FileSize
 				}
-				daemon.SendJobProgress(job.ID, "downloading", pct, completed, total, speed, 0)
+				pct := 0.0
+				var eta int64 = 0
+				if total > 0 {
+					pct = float64(completed) / float64(total) * 100.0
+					if speed > 0 && total > completed {
+						eta = (total - completed) / speed
+					}
+				}
+				daemon.SendJobProgress(job.ID, "downloading", pct, completed, total, speed, int(eta))
 			})
 
 		// If torrent downloaded a directory, zip it
@@ -181,7 +195,7 @@ func processJob(job *uploader.PolledJob) {
 
 		tgDl := downloader.NewTelegramFileDownloader(botToken)
 
-		daemon.SendJobProgress(job.ID, "downloading", 5.0, 0, 0, 0, 0)
+		daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, 0, 0, 0)
 
 		fileName := job.FileName
 		if fileName == "" {
@@ -190,15 +204,16 @@ func processJob(job *uploader.PolledJob) {
 
 		downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize,
 			func(downloaded, total, speed int64) {
+				if total <= 0 && job.FileSize > 0 {
+					total = job.FileSize
+				}
 				pct := 0.0
 				var eta int64 = 0
 				if total > 0 {
-					pct = float64(downloaded) / float64(total) * 50.0
+					pct = float64(downloaded) / float64(total) * 100.0
 					if speed > 0 && total > downloaded {
 						eta = (total - downloaded) / speed
 					}
-				} else if downloaded > 0 {
-					pct = 25.0
 				}
 				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
 			})
@@ -215,7 +230,16 @@ func processJob(job *uploader.PolledJob) {
 	}
 
 	log.Printf("📥 Downloaded: %s", downloadedPath)
-	daemon.SendJobProgress(job.ID, "uploading", 50.0, 0, 0, 0, 0)
+
+	// Get file info
+	fileInfo, _ := os.Stat(downloadedPath)
+	fileSize := int64(0)
+	if fileInfo != nil {
+		fileSize = fileInfo.Size()
+	}
+	fileName := filepath.Base(downloadedPath)
+
+	daemon.SendJobProgress(job.ID, "uploading", 0.0, 0, fileSize, 0, 0)
 
 	// Upload to Google Drive — Multi-Account Availability Loop
 	var driveUploader *uploader.DriveUploader
@@ -269,24 +293,19 @@ func processJob(job *uploader.PolledJob) {
 		activeAccounts = append(activeAccounts, driveUploader)
 	}
 
-	// Get file info
-	fileInfo, _ := os.Stat(downloadedPath)
-	fileSize := int64(0)
-	if fileInfo != nil {
-		fileSize = fileInfo.Size()
-	}
-	fileName := filepath.Base(downloadedPath)
-
 	var webLink, fileId string
 	var uploadErr error
 
 	for idx, uploaderAcc := range activeAccounts {
 		webLink, fileId, uploadErr = uploaderAcc.UploadFile(ctx, downloadedPath, fileName,
 			func(uploaded, total, speed int64) {
-				pct := 50.0
+				if total <= 0 && fileSize > 0 {
+					total = fileSize
+				}
+				pct := 0.0
 				var eta int64 = 0
 				if total > 0 {
-					pct = 50.0 + (float64(uploaded) / float64(total) * 50.0) // Upload is 50-100%
+					pct = float64(uploaded) / float64(total) * 100.0
 					if speed > 0 && total > uploaded {
 						eta = (total - uploaded) / speed
 					}
