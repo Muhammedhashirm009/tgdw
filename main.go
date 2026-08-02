@@ -252,14 +252,20 @@ func main() {
 	if kingURL != "" && workerURL != "" {
 		go func() {
 			kingURL = strings.TrimRight(kingURL, "/")
-			workerID := "worker-node"
-			if daemon.Creds != nil && daemon.Creds.WorkerID != "" {
+			workerID := os.Getenv("NODE_NAME")
+			if workerID == "" {
+				workerID = os.Getenv("WORKER_NAME")
+			}
+			if workerID == "" {
+				workerID = os.Getenv("RENDER_SERVICE_NAME")
+			}
+			if workerID == "" && daemon.Creds != nil && daemon.Creds.WorkerID != "" {
 				workerID = daemon.Creds.WorkerID
 			}
-			workerName := os.Getenv("RENDER_SERVICE_NAME")
-			if workerName == "" {
-				workerName = workerID
+			if workerID == "" {
+				workerID = "node-" + strings.ReplaceAll(strings.TrimPrefix(strings.TrimPrefix(workerURL, "https://"), "http://"), "/", "")
 			}
+			workerName := workerID
 
 			regPayload, _ := json.Marshal(map[string]interface{}{
 				"worker_id": workerID,
