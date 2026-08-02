@@ -238,6 +238,70 @@ func main() {
 		log.Println("💓 5s Worker Telemetry Heartbeat Active")
 	}
 
+	// 2b. Direct King Bot Registration Loop (Zero-touch auth with KING_BOT_URL + KING_SECRET)
+	kingURL := os.Getenv("KING_BOT_URL")
+	kingSec := os.Getenv("KING_SECRET")
+	if kingSec == "" {
+		kingSec = os.Getenv("WORKER_SECRET")
+	}
+	if kingSec == "" {
+		kingSec = "aurora_king_secret_key_2026"
+	}
+	workerURL := os.Getenv("WORKER_URL")
+
+	if kingURL != "" && workerURL != "" {
+		go func() {
+			kingURL = strings.TrimRight(kingURL, "/")
+			workerID := "worker-node"
+			if daemon.Creds != nil && daemon.Creds.WorkerID != "" {
+				workerID = daemon.Creds.WorkerID
+			}
+			workerName := os.Getenv("RENDER_SERVICE_NAME")
+			if workerName == "" {
+				workerName = workerID
+			}
+
+			regPayload, _ := json.Marshal(map[string]interface{}{
+				"worker_id": workerID,
+				"name":      workerName,
+				"url":       workerURL,
+				"secret":    os.Getenv("WORKER_SECRET"),
+				"max_jobs":  3,
+			})
+
+			req, _ := http.NewRequest("POST", kingURL+"/api/worker/register", bytes.NewBuffer(regPayload))
+			if req != nil {
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("X-King-Secret", kingSec)
+				client := &http.Client{Timeout: 5 * time.Second}
+				resp, rErr := client.Do(req)
+				if rErr == nil {
+					resp.Body.Close()
+					log.Printf("👑 Direct King Bot Registration Successful -> %s", kingURL)
+				}
+			}
+
+			// Direct Heartbeat to King Bot every 5s
+			hbTicker := time.NewTicker(5 * time.Second)
+			for range hbTicker.C {
+				hbPayload, _ := json.Marshal(map[string]interface{}{
+					"worker_id":   workerID,
+					"active_jobs": daemon.ActiveJobs,
+				})
+				hReq, _ := http.NewRequest("POST", kingURL+"/api/worker/heartbeat", bytes.NewBuffer(hbPayload))
+				if hReq != nil {
+					hReq.Header.Set("Content-Type", "application/json")
+					hReq.Header.Set("X-King-Secret", kingSec)
+					client := &http.Client{Timeout: 5 * time.Second}
+					hResp, hErr := client.Do(hReq)
+					if hErr == nil {
+						hResp.Body.Close()
+					}
+				}
+			}
+		}()
+	}
+
 	// 3. Fetch config from Control Plane
 	var err error
 	workerConfig, err = daemon.FetchConfig()
