@@ -30,6 +30,22 @@ func esc(s string) string {
 	return s
 }
 
+func cleanFileName(s string) string {
+	for strings.Contains(s, "..") {
+		s = strings.ReplaceAll(s, "..", ".")
+	}
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, ":", "_")
+	s = strings.ReplaceAll(s, "*", "_")
+	s = strings.ReplaceAll(s, "?", "_")
+	s = strings.ReplaceAll(s, "\"", "_")
+	s = strings.ReplaceAll(s, "<", "_")
+	s = strings.ReplaceAll(s, ">", "_")
+	s = strings.ReplaceAll(s, "|", "_")
+	return strings.TrimSpace(s)
+}
+
 func progressBar(percent float64) string {
 	p := int(percent)
 	if p < 0 {
@@ -351,7 +367,7 @@ func processJob(job *uploader.PolledJob) {
 
 		daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, 0, 0, 0)
 
-		fileName := job.FileName
+		fileName := cleanFileName(job.FileName)
 		if fileName == "" {
 			fileName = "telegram_file_" + job.ID
 		}
