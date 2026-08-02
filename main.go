@@ -319,6 +319,39 @@ func processJob(job *uploader.PolledJob) {
 
 	var downloadedPath string
 	var dlErr error
+	var webLink, fileId string
+
+	// Prepare active Google Drive storage accounts for job
+	var activeAccounts []*uploader.DriveUploader
+	if job.GDriveAccount != nil && job.GDriveAccount.RefreshToken != "" {
+		token := &oauth2.Token{
+			AccessToken:  job.GDriveAccount.AccessToken,
+			RefreshToken: job.GDriveAccount.RefreshToken,
+			TokenType:    "Bearer",
+			Expiry:       time.Now().Add(-time.Hour),
+		}
+		uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, job.GDriveAccount.ClientID, job.GDriveAccount.ClientSecret)
+		if uErr == nil {
+			activeAccounts = append(activeAccounts, uploaderInst)
+		}
+	}
+	if workerConfig != nil && len(workerConfig.GDriveAccounts) > 0 {
+		for _, acct := range workerConfig.GDriveAccounts {
+			if job.GDriveAccount != nil && acct.ID == job.GDriveAccount.ID {
+				continue
+			}
+			token := &oauth2.Token{
+				AccessToken:  acct.AccessToken,
+				RefreshToken: acct.RefreshToken,
+				TokenType:    "Bearer",
+				Expiry:       time.Now().Add(-time.Hour),
+			}
+			uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, acct.ClientID, acct.ClientSecret)
+			if uErr == nil {
+				activeAccounts = append(activeAccounts, uploaderInst)
+			}
+		}
+	}
 
 	switch job.JobType {
 	case "http_url":
@@ -397,7 +430,6 @@ func processJob(job *uploader.PolledJob) {
 		}
 
 	case "telegram_file":
-		// Download via Telegram Bot API (local server at port 8081 supports any file size)
 		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 		if botToken == "" {
 			botToken = os.Getenv("BOT_TOKEN")
@@ -407,38 +439,127 @@ func processJob(job *uploader.PolledJob) {
 		}
 
 		tgDl := downloader.NewTelegramFileDownloader(botToken)
-
-		daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, 0, 0, 0)
+		go daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, job.FileSize, 0, 0)
 
 		fileName := cleanFileName(job.FileName)
 		if fileName == "" {
 			fileName = "telegram_file_" + job.ID
 		}
 
-		downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize,
-			func(downloaded, total, speed int64) {
-				if total <= 0 && job.FileSize > 0 {
-					total = job.FileSize
+		fileURL, fErr := tgDl.GetFileURL(ctx, job.SourceInput)
+		if fErr != nil {
+			log.Printf("⚠️ getFileURL error: %v (falling back to disk download)", fErr)
+			downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
+		} else {
+			log.Printf("📥 Direct Telegram Stream URL: %s", fileURL)
+			req, reqErr := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
+			if reqErr != nil {
+				daemon.SendJobFail(job.ID, "Failed to create stream request: "+reqErr.Error())
+				return
+			}
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+
+			resp, doErr := downloader.FastClient.Do(req)
+			if doErr != nil || resp.StatusCode >= 400 {
+				log.Printf("⚠️ Direct stream error (status %v), falling back to disk download", doErr)
+				downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
+			} else {
+				defer resp.Body.Close()
+
+				realSize := resp.ContentLength
+				if realSize <= 0 {
+					realSize = job.FileSize
 				}
-				pct := 0.0
-				var eta int64 = 0
-				if total > 0 {
-					pct = float64(downloaded) / float64(total) * 100.0
-					if speed > 0 && total > downloaded {
-						eta = (total - downloaded) / speed
+
+				// Direct Stream to Google Drive (matching old bot)
+				if len(activeAccounts) > 0 {
+					var streamUploadErr error
+					for idx, uploaderAcc := range activeAccounts {
+						webLink, fileId, streamUploadErr = uploaderAcc.UploadStream(ctx, resp.Body, fileName, realSize,
+							func(uploaded, total, speed int64) {
+								if total <= 0 && realSize > 0 {
+									total = realSize
+								}
+								pct := 0.0
+								var eta int64 = 0
+								if total > 0 {
+									pct = float64(uploaded) / float64(total) * 100.0
+									if speed > 0 && total > uploaded {
+										eta = (total - uploaded) / speed
+									}
+								}
+								go daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
+								if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+									statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
+									if uploaded == 0 || speed <= 0 {
+										statusInfo = "⚡ <i>Streaming to Google Drive...</i>"
+									}
+									pText := fmt.Sprintf("☁️ <b>Streaming to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+										job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(uploaded), formatSize(total))
+									editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
+								}
+							})
+						if streamUploadErr == nil {
+							break
+						}
+						log.Printf("⚠️ Stream upload error on account #%d: %v", idx+1, streamUploadErr)
+					}
+
+					if streamUploadErr == nil && fileId != "" {
+						// Stream upload succeeded! Finish job immediately!
+						log.Printf("✅ Stream Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
+						go daemon.SendJobComplete(job.ID, fileId, realSize, fileName)
+
+						cpURL := "https://aurora-worker.muhammedhashirm4.workers.dev"
+						apiKey := ""
+						if daemon != nil && daemon.Creds != nil {
+							cpURL = daemon.Creds.ControlPlaneURL
+							apiKey = daemon.Creds.APIKey
+						}
+						acctID := ""
+						if job.GDriveAccount != nil {
+							acctID = job.GDriveAccount.ID
+						}
+
+						syncPayload := map[string]interface{}{
+							"title":                  fileName,
+							"drive_file_id":          fileId,
+							"drive_link":             webLink,
+							"gdrive_account_id":      acctID,
+							"file_size":              realSize,
+							"uploaded_by_telegram_id": job.TelegramChatID,
+						}
+
+						catalogID, syncErr := SyncCatalogToWorker(cpURL, apiKey, syncPayload)
+						playerLink := "https://play.hxdev.in"
+						addedNote := ""
+						if syncErr == nil && catalogID > 0 {
+							log.Printf("🎉 Catalog Synced Successfully! CatalogID=%d", catalogID)
+							playerLink = fmt.Sprintf("https://play.hxdev.in/#/detail/%d", catalogID)
+							addedNote = fmt.Sprintf("\n\n🎬 <b>Added to Aurora Play</b> (Catalog ID: %d)", catalogID)
+						}
+
+						if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+							driveLink := webLink
+							if driveLink == "" && fileId != "" {
+								driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
+							}
+							cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
+								esc(fileName), formatSize(realSize), addedNote)
+
+							keyboard := map[string]interface{}{
+								"inline_keyboard": [][]map[string]string{
+									{{"text": "📂 Open in Google Drive", "url": driveLink}},
+									{{"text": "🚀 Stream & Download on Aurora Play", "url": playerLink}},
+								},
+							}
+							editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
+						}
+						return // Stream upload complete!
 					}
 				}
-				go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
-				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
-					statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
-					if downloaded == 0 || speed <= 0 {
-						statusInfo = "⚡ <i>Fetching Telegram stream...</i>"
-					}
-					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
-						job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
-					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
-				}
-			})
+			}
+		}
 
 	case "torrent_file":
 		// BUG 10 fix: Download .torrent file from Telegram first, then use torrent downloader
@@ -518,51 +639,11 @@ func processJob(job *uploader.PolledJob) {
 
 	daemon.SendJobProgress(job.ID, "uploading", 0.0, 0, fileSize, 0, 0)
 
-	// Upload to Google Drive — Job-Assigned Round-Robin Account Protocol
-	var activeAccounts []*uploader.DriveUploader
-
-	// Primary: Use job-assigned account from Control Plane's Round-Robin load balancer
-	if job.GDriveAccount != nil && job.GDriveAccount.RefreshToken != "" {
-		token := &oauth2.Token{
-			AccessToken:  job.GDriveAccount.AccessToken,
-			RefreshToken: job.GDriveAccount.RefreshToken,
-			TokenType:    "Bearer",
-			Expiry:       time.Now().Add(-time.Hour), // Force token refresh
-		}
-		uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, job.GDriveAccount.ClientID, job.GDriveAccount.ClientSecret)
-		if uErr == nil {
-			activeAccounts = append(activeAccounts, uploaderInst)
-			log.Printf("🎯 Assigned GDrive account: %s (%s)", job.GDriveAccount.Email, job.GDriveAccount.ID)
-		} else {
-			log.Printf("⚠️ GDrive assigned account '%s' auth error: %v", job.GDriveAccount.Email, uErr)
-		}
-	}
-
-	// Secondary: Include all other active accounts for failover
-	if workerConfig != nil && len(workerConfig.GDriveAccounts) > 0 {
-		for _, acct := range workerConfig.GDriveAccounts {
-			if job.GDriveAccount != nil && acct.ID == job.GDriveAccount.ID {
-				continue // already added
-			}
-			token := &oauth2.Token{
-				AccessToken:  acct.AccessToken,
-				RefreshToken: acct.RefreshToken,
-				TokenType:    "Bearer",
-				Expiry:       time.Now().Add(-time.Hour), // Force token refresh
-			}
-			uploaderInst, uErr := uploader.NewDriveUploader(ctx, token, acct.ClientID, acct.ClientSecret)
-			if uErr == nil {
-				activeAccounts = append(activeAccounts, uploaderInst)
-			}
-		}
-	}
-
 	if len(activeAccounts) == 0 {
 		daemon.SendJobFail(job.ID, "No active Google Drive storage account available")
 		return
 	}
 
-	var webLink, fileId string
 	var uploadErr error
 
 	for idx, uploaderAcc := range activeAccounts {

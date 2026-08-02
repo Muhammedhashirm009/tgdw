@@ -46,8 +46,42 @@ type getFileResponse struct {
 	Result struct {
 		FileID   string `json:"file_id"`
 		FileSize int64  `json:"file_size"`
-		FilePath string `json:"file_path"`
 	} `json:"result"`
+}
+
+// GetFileURL calls getFile API to retrieve the direct HTTP download URL for a fileID
+func (tfd *TelegramFileDownloader) GetFileURL(ctx context.Context, fileID string) (string, error) {
+	apiServers := []string{tfd.APIBaseURL}
+	if tfd.APIBaseURL != "https://api.telegram.org" {
+		apiServers = append(apiServers, "https://api.telegram.org")
+	}
+	var lastErr error
+	for _, server := range apiServers {
+		for attempt := 1; attempt <= 2; attempt++ {
+			getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", server, tfd.BotToken, fileID)
+			req, err := http.NewRequestWithContext(ctx, "GET", getFileURL, nil)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				lastErr = err
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			filePath := extractJSONString(body, "file_path")
+			if filePath != "" {
+				return fmt.Sprintf("%s/file/bot%s/%s", server, tfd.BotToken, filePath), nil
+			}
+			lastErr = fmt.Errorf("getFile status %d: %s", resp.StatusCode, string(body[:min(len(body), 100)]))
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	return "", lastErr
 }
 
 // DownloadByFileID downloads a Telegram file using Bot API getFile + download

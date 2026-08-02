@@ -14,8 +14,8 @@ import (
 // ProgressCallback is called repeatedly to report progress
 type ProgressCallback func(bytesDownloaded int64, totalBytes int64, speedBytesPerSec int64)
 
-// High-speed HTTP client with 4MB read/write buffers, connection pooling, and HTTP/2 support
-var fastClient = &http.Client{
+// High-speed HTTP client with 8MB read/write buffers, connection pooling
+var FastClient = &http.Client{
 	Timeout: 0, // No timeout for large file downloads
 	Transport: &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -28,7 +28,6 @@ var fastClient = &http.Client{
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
 		ReadBufferSize:        8 * 1024 * 1024, // 8MB Socket Read Buffer
 		WriteBufferSize:       8 * 1024 * 1024, // 8MB Socket Write Buffer
 	},
@@ -42,7 +41,7 @@ func DownloadHTTP(ctx context.Context, url string, destDir string, filename stri
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-	resp, err := fastClient.Do(req)
+	resp, err := FastClient.Do(req)
 	if err != nil {
 		return "", err
 	}
