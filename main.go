@@ -331,6 +331,21 @@ func main() {
 }
 
 func processJob(job *uploader.PolledJob) {
+	workerNodeName := os.Getenv("NODE_NAME")
+	if workerNodeName == "" {
+		workerNodeName = os.Getenv("WORKER_NAME")
+	}
+	if workerNodeName == "" {
+		workerNodeName = os.Getenv("RENDER_SERVICE_NAME")
+	}
+	if workerNodeName == "" {
+		if daemon != nil && daemon.Creds != nil && daemon.Creds.WorkerID != "" {
+			workerNodeName = daemon.Creds.WorkerID
+		} else {
+			workerNodeName = "Go Upload Worker"
+		}
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("❌ PANIC in job %s: %v", job.ID, r)
@@ -509,14 +524,6 @@ func processJob(job *uploader.PolledJob) {
 			fileName = "telegram_file_" + job.ID
 		}
 
-		workerNodeName := os.Getenv("RENDER_SERVICE_NAME")
-		if workerNodeName == "" {
-			if daemon != nil && daemon.Creds != nil && daemon.Creds.WorkerID != "" {
-				workerNodeName = daemon.Creds.WorkerID
-			} else {
-				workerNodeName = "Go Upload Worker"
-			}
-		}
 
 		progressCb := func(downloaded, total, speed int64) {
 			if total <= 0 && job.FileSize > 0 {
@@ -646,8 +653,8 @@ func processJob(job *uploader.PolledJob) {
 								if driveLink == "" && fileId != "" {
 									driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
 								}
-								cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
-									esc(fileName), formatSize(realSize), addedNote)
+								cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s\n🖥️ <b>Node:</b> <code>%s</code>%s\n\n<code>[████████████████████] 100%%</code>",
+									esc(fileName), formatSize(realSize), esc(workerNodeName), addedNote)
 								keyboard := map[string]interface{}{
 									"inline_keyboard": [][]map[string]string{
 										{{"text": "📂 Open in Google Drive", "url": driveLink}},
@@ -828,8 +835,8 @@ func processJob(job *uploader.PolledJob) {
 		if driveLink == "" && fileId != "" {
 			driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
 		}
-		cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
-			esc(fileName), formatSize(fileSize), addedNote)
+		cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s\n🖥️ <b>Node:</b> <code>%s</code>%s\n\n<code>[████████████████████] 100%%</code>",
+			esc(fileName), formatSize(fileSize), esc(workerNodeName), addedNote)
 
 		keyboard := map[string]interface{}{
 			"inline_keyboard": [][]map[string]string{
