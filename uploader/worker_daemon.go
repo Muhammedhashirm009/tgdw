@@ -77,23 +77,8 @@ func NewWorkerDaemon(credsFile string) *WorkerDaemon {
 	}
 }
 
-// LoadOrRegister initializes worker credentials using JOIN_TOKEN if needed
+// LoadOrRegister initializes worker credentials using WORKER_SECRET or JOIN_TOKEN
 func (d *WorkerDaemon) LoadOrRegister() error {
-	// 1. Check if local credentials file exists
-	if _, err := os.Stat(d.CredsFile); err == nil {
-		data, err := os.ReadFile(d.CredsFile)
-		if err == nil {
-			var creds WorkerCredentials
-			if err := json.Unmarshal(data, &creds); err == nil && creds.WorkerID != "" {
-				d.Creds = &creds
-				log.Printf("✅ Loaded Worker Credentials: WorkerID=%s", creds.WorkerID)
-				return nil
-			}
-		}
-	}
-
-	// 2. Perform Register Flow using JOIN_TOKEN
-	joinToken := os.Getenv("JOIN_TOKEN")
 	controlPlane := os.Getenv("CONTROL_PLANE")
 	if controlPlane == "" {
 		controlPlane = os.Getenv("WORKER_API_URL")
@@ -102,14 +87,77 @@ func (d *WorkerDaemon) LoadOrRegister() error {
 		controlPlane = "https://aurora-worker.muhammedhashirm4.workers.dev"
 	}
 
-	if joinToken == "" {
-		log.Println("⚠️ JOIN_TOKEN not provided in environment. Worker operating in auto-registration mode.")
-		joinToken = "auto_register"
+	workerSecret := os.Getenv("WORKER_SECRET")
+	workerURL := os.Getenv("WORKER_URL")
+	if workerURL == "" {
+		workerURL = os.Getenv("WORKER_PUBLIC_URL")
 	}
+	workerName := os.Getenv("WORKER_NAME")
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "go-upload-worker"
+	}
+
+	// 1. If WORKER_SECRET is configured in env, perform Auto-Connect
+	if workerSecret != "" {
+		connectReq := map[string]interface{}{
+			"secret":   workerSecret,
+			"url":      workerURL,
+			"name":     workerName,
+			"hostname": hostname,
+			"version":  "2.0.0",
+			"platform": runtime.GOOS,
+			"cpu":      runtime.NumCPU(),
+			"memory":   8192,
+			"region":   os.Getenv("WORKER_REGION"),
+		}
+		reqBytes, _ := json.Marshal(connectReq)
+		resp, err := d.HTTPClient.Post(controlPlane+"/api/worker/connect", "application/json", bytes.NewBuffer(reqBytes))
+		if err == nil {
+			defer resp.Body.Close()
+			respBytes, _ := io.ReadAll(resp.Body)
+			var connResp map[string]interface{}
+			if err := json.Unmarshal(respBytes, &connResp); err == nil {
+				if success, _ := connResp["success"].(bool); success {
+					wID, _ := connResp["workerId"].(string)
+					aKey, _ := connResp["apiKey"].(string)
+					aSec, _ := connResp["apiSecret"].(string)
+					d.Creds = &WorkerCredentials{
+						WorkerID:        wID,
+						APIKey:          aKey,
+						APISecret:       aSec,
+						ControlPlaneURL: controlPlane,
+					}
+					log.Printf("✅ Auto-Connected Worker via Secret Key: WorkerID=%s (URL=%s)", wID, workerURL)
+					saveBytes, _ := json.MarshalIndent(d.Creds, "", "  ")
+					_ = os.WriteFile(d.CredsFile, saveBytes, 0600)
+					return nil
+				}
+			}
+		} else {
+			log.Printf("Notice: Auto-connect attempt failed: %v (falling back to stored credentials/join_token)", err)
+		}
+	}
+
+	// 2. Check if local credentials file exists
+	if _, err := os.Stat(d.CredsFile); err == nil {
+		data, err := os.ReadFile(d.CredsFile)
+		if err == nil {
+			var creds WorkerCredentials
+			if err := json.Unmarshal(data, &creds); err == nil && creds.WorkerID != "" {
+				creds.ControlPlaneURL = controlPlane
+				d.Creds = &creds
+				log.Printf("✅ Loaded Worker Credentials: WorkerID=%s", creds.WorkerID)
+				return nil
+			}
+		}
+	}
+
+	// 3. Perform Register Flow using JOIN_TOKEN
+	joinToken := os.Getenv("JOIN_TOKEN")
+	if joinToken == "" {
+		joinToken = "auto_register"
 	}
 
 	regReq := RegistrationRequest{

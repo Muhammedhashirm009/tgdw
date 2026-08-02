@@ -45,8 +45,45 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
+	http.HandleFunc("/dispatch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		secretEnv := os.Getenv("WORKER_SECRET")
+		secHeader := r.Header.Get("X-Worker-Secret")
+		if secretEnv != "" && secHeader != secretEnv {
+			http.Error(w, "Unauthorized worker secret", http.StatusUnauthorized)
+			return
+		}
+
+		var job uploader.PolledJob
+		if err := json.NewDecoder(r.Body).Decode(&job); err != nil || job.ID == "" {
+			http.Error(w, "Invalid job payload", http.StatusBadRequest)
+			return
+		}
+
+		maxAllowed := 2
+		if workerConfig != nil && workerConfig.MaxConcurrentJobs > 0 {
+			maxAllowed = workerConfig.MaxConcurrentJobs
+		}
+		if daemon.ActiveJobs >= maxAllowed {
+			http.Error(w, "Worker at capacity", http.StatusServiceUnavailable)
+			return
+		}
+
+		log.Printf("⚡ Direct Push Job Received: ID=%s Type=%s (Active: %d/%d)", job.ID, job.JobType, daemon.ActiveJobs+1, maxAllowed)
+		daemon.ActiveJobs++
+
+		go processJob(&job)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "jobId": job.ID})
+	})
+
 	go func() {
-		log.Printf("Listening for health probes on 0.0.0.0:%s...", port)
+		log.Printf("Listening for direct job dispatch & health probes on 0.0.0.0:%s...", port)
 		if err := http.ListenAndServe(":"+port, nil); err != nil {
 			log.Printf("Warning: Health server stopped: %v", err)
 		}
