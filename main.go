@@ -118,6 +118,39 @@ func editTelegramDirect(chatId, msgId string, text string, replyMarkup interface
 	}()
 }
 
+// SyncCatalogToWorker registers the uploaded media file into Cloudflare D1 via Worker API (matching old bot)
+func SyncCatalogToWorker(controlPlaneURL, apiKey string, payload map[string]interface{}) (int, error) {
+	if controlPlaneURL == "" {
+		controlPlaneURL = "https://aurora-worker.muhammedhashirm4.workers.dev"
+	}
+	endpoint := fmt.Sprintf("%s/api/admin/bot-catalog-sync", strings.TrimRight(controlPlaneURL, "/"))
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("x-admin-key", apiKey)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(resp.Body)
+	var res map[string]interface{}
+	json.Unmarshal(respBytes, &res)
+	if idVal, ok := res["id"].(float64); ok {
+		return int(idVal), nil
+	}
+	return 0, fmt.Errorf("no catalog id returned")
+}
+
 func main() {
 	log.Println("===========================================")
 	log.Println("🚀 Starting Aurora Go Upload Worker (V2 Engine)")
@@ -569,18 +602,51 @@ func processJob(job *uploader.PolledJob) {
 	log.Printf("✅ Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
 	go daemon.SendJobComplete(job.ID, fileId, fileSize, fileName)
 
+	// Direct Aurora Player Catalog Sync (matching old bot)
+	cpURL := "https://aurora-worker.muhammedhashirm4.workers.dev"
+	apiKey := ""
+	if daemon != nil && daemon.Creds != nil {
+		cpURL = daemon.Creds.ControlPlaneURL
+		apiKey = daemon.Creds.APIKey
+	}
+
+	acctID := ""
+	if job.GDriveAccount != nil {
+		acctID = job.GDriveAccount.ID
+	}
+
+	syncPayload := map[string]interface{}{
+		"title":                  fileName,
+		"drive_file_id":          fileId,
+		"drive_link":             webLink,
+		"gdrive_account_id":      acctID,
+		"file_size":              fileSize,
+		"uploaded_by_telegram_id": job.TelegramChatID,
+	}
+
+	catalogID, syncErr := SyncCatalogToWorker(cpURL, apiKey, syncPayload)
+	playerLink := "https://play.hxdev.in"
+	addedNote := ""
+	if syncErr == nil && catalogID > 0 {
+		log.Printf("🎉 Catalog Synced Successfully! CatalogID=%d", catalogID)
+		playerLink = fmt.Sprintf("https://play.hxdev.in/#/detail/%d", catalogID)
+		addedNote = fmt.Sprintf("\n\n🎬 <b>Added to Aurora Play</b> (Catalog ID: %d)", catalogID)
+	} else if syncErr != nil {
+		log.Printf("⚠️ Catalog sync notice: %v", syncErr)
+	}
+
 	if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 		driveLink := webLink
 		if driveLink == "" && fileId != "" {
 			driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
 		}
-		cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s\n\n<code>[████████████████████] 100%%</code>",
-			esc(fileName), formatSize(fileSize))
+		cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
+			esc(fileName), formatSize(fileSize), addedNote)
 
 		keyboard := map[string]interface{}{
 			"inline_keyboard": [][]map[string]string{
 				{{"text": "📂 Open in Google Drive", "url": driveLink}},
-				{{"text": "🚀 Open Aurora Play", "url": "https://play.hxdev.in"}},
+				{{"text": "🚀 Stream & Download on Aurora Play", "url": playerLink}},
 			},
 		}
 		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
