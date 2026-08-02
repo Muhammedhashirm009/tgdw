@@ -377,7 +377,9 @@ func processJob(job *uploader.PolledJob) {
 						eta = (total - downloaded) / speed
 					}
 				}
-				go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
+				if daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta)) {
+					cancel()
+				}
 				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 					statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
 					if downloaded == 0 || speed <= 0 {

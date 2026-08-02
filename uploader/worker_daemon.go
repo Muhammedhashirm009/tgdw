@@ -277,10 +277,10 @@ func (d *WorkerDaemon) PollNextJob() (*PolledJob, error) {
 	return pollResp.Job, nil
 }
 
-// SendJobProgress sends progress update to Control Plane
-func (d *WorkerDaemon) SendJobProgress(jobID, status string, pct float64, transferred, total, speed int64, eta int) {
+// SendJobProgress sends progress update to Control Plane and returns true if job abort was requested
+func (d *WorkerDaemon) SendJobProgress(jobID, status string, pct float64, transferred, total, speed int64, eta int) bool {
 	if d.Creds == nil {
-		return
+		return false
 	}
 
 	payload := map[string]interface{}{
@@ -296,7 +296,7 @@ func (d *WorkerDaemon) SendJobProgress(jobID, status string, pct float64, transf
 	bodyBytes, _ := json.Marshal(payload)
 	req, err := http.NewRequest("POST", d.Creds.ControlPlaneURL+"/api/workers/jobs/progress", bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return
+		return false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -306,8 +306,18 @@ func (d *WorkerDaemon) SendJobProgress(jobID, status string, pct float64, transf
 
 	resp, err := d.HTTPClient.Do(req)
 	if err == nil {
-		resp.Body.Close()
+		defer resp.Body.Close()
+		bBytes, _ := io.ReadAll(resp.Body)
+		var res map[string]interface{}
+		json.Unmarshal(bBytes, &res)
+		if abort, _ := res["abort"].(bool); abort {
+			return true
+		}
+		if cancel, _ := res["cancel"].(bool); cancel {
+			return true
+		}
 	}
+	return false
 }
 
 // SendJobComplete notifies Control Plane of job completion
