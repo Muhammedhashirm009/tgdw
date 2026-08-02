@@ -98,9 +98,10 @@ func editTelegramDirect(chatId, msgId string, text string, replyMarkup interface
 	}
 	directMsgState.Store(key, now)
 
+	msgIdInt, _ := strconv.Atoi(msgId)
 	payload := map[string]interface{}{
 		"chat_id":    chatId,
-		"message_id": msgId,
+		"message_id": msgIdInt,
 		"text":       text,
 		"parse_mode": "HTML",
 	}
