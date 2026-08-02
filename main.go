@@ -273,7 +273,7 @@ func main() {
 					"name":      workerName,
 					"url":       workerURL,
 					"secret":    os.Getenv("WORKER_SECRET"),
-					"max_jobs":  3,
+					"max_jobs":  10,
 				})
 
 				req, _ := http.NewRequest("POST", kingURL+"/api/worker/register", bytes.NewBuffer(regPayload))
