@@ -20,16 +20,16 @@ var FastClient = &http.Client{
 	Transport: &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
-			Timeout:   15 * time.Second,
-			KeepAlive: 60 * time.Second,
+			Timeout:   30 * time.Second,
+			KeepAlive: 120 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          1000,
-		MaxIdleConnsPerHost:   500,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ReadBufferSize:        16 * 1024 * 1024, // 16MB Socket Read Buffer for 30-50+ MB/s
-		WriteBufferSize:       16 * 1024 * 1024, // 16MB Socket Write Buffer for 30-50+ MB/s
+		MaxIdleConns:          2000,
+		MaxIdleConnsPerHost:   1000,
+		IdleConnTimeout:       120 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+		ReadBufferSize:        32 * 1024 * 1024, // 32MB Socket Read Buffer for max throughput
+		WriteBufferSize:       32 * 1024 * 1024, // 32MB Socket Write Buffer for max throughput
 	},
 }
 
