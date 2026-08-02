@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -164,7 +165,11 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 				break
 			}
 
-			lastErr = fmt.Errorf("getFile failed (status %d): %s", resp.StatusCode, string(body[:min(len(body), 150)]))
+			lastErrStr := string(body[:min(len(body), 150)])
+			if strings.Contains(lastErrStr, "file is too big") {
+				return "", fmt.Errorf("Telegram Bot API 20MB limit reached: file is too big for standard API. Local Bot API server or MTProto client required")
+			}
+			lastErr = fmt.Errorf("getFile failed (status %d): %s", resp.StatusCode, lastErrStr)
 			time.Sleep(500 * time.Millisecond)
 		}
 		if filePath != "" {
@@ -173,7 +178,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	}
 
 	if filePath == "" {
-		return "", fmt.Errorf("getFile failed after retries: %v", lastErr)
+		return "", fmt.Errorf("getFile failed: %v", lastErr)
 	}
 
 	// Fire immediate initial progress callback
