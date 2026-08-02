@@ -90,14 +90,20 @@ func editTelegramDirect(chatId, msgId string, text string, replyMarkup interface
 	key := chatId + ":" + msgId
 	now := time.Now()
 
+	type msgState struct {
+		t   time.Time
+		txt string
+	}
+
 	if !force {
-		if last, ok := directMsgState.Load(key); ok {
-			if now.Sub(last.(time.Time)) < 3*time.Second {
+		if st, ok := directMsgState.Load(key); ok {
+			last := st.(msgState)
+			if last.txt == text || now.Sub(last.t) < 3*time.Second {
 				return
 			}
 		}
 	}
-	directMsgState.Store(key, now)
+	directMsgState.Store(key, msgState{t: now, txt: text})
 
 	msgIdInt, _ := strconv.Atoi(msgId)
 	payload := map[string]interface{}{
