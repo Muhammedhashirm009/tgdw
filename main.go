@@ -196,7 +196,7 @@ func main() {
 			return
 		}
 
-		maxAllowed := 2
+		maxAllowed := 3
 		if workerConfig != nil && workerConfig.MaxConcurrentJobs > 0 {
 			maxAllowed = workerConfig.MaxConcurrentJobs
 		}
@@ -244,7 +244,7 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond) // Fast polling for instant first response (old bot was in-process)
 		for range ticker.C {
-			maxAllowed := 2
+			maxAllowed := 3
 			if workerConfig != nil && workerConfig.MaxConcurrentJobs > 0 {
 				maxAllowed = workerConfig.MaxConcurrentJobs
 			}
@@ -535,7 +535,6 @@ func processJob(job *uploader.PolledJob) {
 
 						if streamUploadErr == nil && fileId != "" {
 							log.Printf("✅ Stream Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
-							go daemon.SendJobComplete(job.ID, fileId, realSize, fileName)
 
 							cpURL := "https://aurora-worker.muhammedhashirm4.workers.dev"
 							apiKey := ""
@@ -566,6 +565,7 @@ func processJob(job *uploader.PolledJob) {
 								addedNote = fmt.Sprintf("\n\n🎬 <b>Added to Aurora Play</b> (Catalog ID: %d)", catalogID)
 							}
 
+							// Send Telegram completion FIRST (before control plane) with throttle bypass
 							if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 								driveLink := webLink
 								if driveLink == "" && fileId != "" {
@@ -573,15 +573,19 @@ func processJob(job *uploader.PolledJob) {
 								}
 								cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
 									esc(fileName), formatSize(realSize), addedNote)
-
 								keyboard := map[string]interface{}{
 									"inline_keyboard": [][]map[string]string{
 										{{"text": "📂 Open in Google Drive", "url": driveLink}},
 										{{"text": "🚀 Stream & Download on Aurora Play", "url": playerLink}},
 									},
 								}
+								// Clear throttle state to guarantee completion message is sent immediately
+								directMsgState.Delete(job.TelegramChatID + ":" + fmt.Sprint(job.TelegramMessageID))
 								editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
 							}
+
+							// THEN notify control plane synchronously (no `go`)
+							daemon.SendJobComplete(job.ID, fileId, realSize, fileName)
 							return
 						}
 					}
@@ -704,12 +708,11 @@ func processJob(job *uploader.PolledJob) {
 
 	if uploadErr != nil {
 		log.Printf("❌ Upload failed for job %s across all active accounts: %v", job.ID, uploadErr)
-		go daemon.SendJobFail(job.ID, "Upload failed: "+uploadErr.Error())
+		daemon.SendJobFail(job.ID, "Upload failed: "+uploadErr.Error())
 		return
 	}
 
 	log.Printf("✅ Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
-	go daemon.SendJobComplete(job.ID, fileId, fileSize, fileName)
 
 	// Direct Aurora Player Catalog Sync (matching old bot)
 	cpURL := "https://aurora-worker.muhammedhashirm4.workers.dev"
@@ -744,6 +747,7 @@ func processJob(job *uploader.PolledJob) {
 		log.Printf("⚠️ Catalog sync notice: %v", syncErr)
 	}
 
+	// Send Telegram completion FIRST with throttle bypass
 	if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 		driveLink := webLink
 		if driveLink == "" && fileId != "" {
@@ -758,8 +762,13 @@ func processJob(job *uploader.PolledJob) {
 				{{"text": "🚀 Stream & Download on Aurora Play", "url": playerLink}},
 			},
 		}
+		// Clear throttle state to guarantee completion message is sent immediately
+		directMsgState.Delete(job.TelegramChatID + ":" + fmt.Sprint(job.TelegramMessageID))
 		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
 	}
+
+	// THEN notify control plane synchronously
+	daemon.SendJobComplete(job.ID, fileId, fileSize, fileName)
 }
 
 // checkCancelRequested polls the control plane to check if a job's cancel was requested
