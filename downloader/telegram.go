@@ -99,6 +99,46 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 		apiServers = append(apiServers, "https://api.telegram.org")
 	}
 
+	// Start background watcher for /var/lib/telegram-bot-api so UI updates live while getFile is downloading over MTProto (matching old bot)
+	trackCtx, trackCancel := context.WithCancel(ctx)
+	defer trackCancel()
+
+	if tfd.APIBaseURL == "http://127.0.0.1:8081" && callback != nil {
+		go func() {
+			var lastSize int64
+			var lastReport time.Time
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-trackCtx.Done():
+					return
+				case <-ticker.C:
+					var maxSize int64
+					filepath.Walk("/var/lib/telegram-bot-api", func(p string, info os.FileInfo, err error) error {
+						if err != nil || info.IsDir() {
+							return nil
+						}
+						if time.Since(info.ModTime()) < 15*time.Second && info.Size() > maxSize {
+							maxSize = info.Size()
+						}
+						return nil
+					})
+
+					if maxSize > 0 {
+						speed := int64(0)
+						if lastSize > 0 && maxSize > lastSize && !lastReport.IsZero() {
+							speed = int64(float64(maxSize-lastSize) / time.Since(lastReport).Seconds())
+						}
+						callback(maxSize, knownFileSize, speed)
+						lastSize = maxSize
+						lastReport = time.Now()
+					}
+				}
+			}
+		}()
+	}
+
 	for _, server := range apiServers {
 		for attempt := 1; attempt <= 2; attempt++ {
 			getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", server, tfd.BotToken, fileID)
