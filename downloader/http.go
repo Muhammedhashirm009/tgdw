@@ -23,13 +23,13 @@ var FastClient = &http.Client{
 			Timeout:   15 * time.Second,
 			KeepAlive: 60 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          500,
-		MaxIdleConnsPerHost:   100,
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   500,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ReadBufferSize:        8 * 1024 * 1024, // 8MB Socket Read Buffer
-		WriteBufferSize:       8 * 1024 * 1024, // 8MB Socket Write Buffer
+		ReadBufferSize:        16 * 1024 * 1024, // 16MB Socket Read Buffer for 30-50+ MB/s
+		WriteBufferSize:       16 * 1024 * 1024, // 16MB Socket Write Buffer for 30-50+ MB/s
 	},
 }
 
