@@ -509,6 +509,15 @@ func processJob(job *uploader.PolledJob) {
 			fileName = "telegram_file_" + job.ID
 		}
 
+		workerNodeName := os.Getenv("RENDER_SERVICE_NAME")
+		if workerNodeName == "" {
+			if daemon != nil && daemon.Creds != nil && daemon.Creds.WorkerID != "" {
+				workerNodeName = daemon.Creds.WorkerID
+			} else {
+				workerNodeName = "Go Upload Worker"
+			}
+		}
+
 		progressCb := func(downloaded, total, speed int64) {
 			if total <= 0 && job.FileSize > 0 {
 				total = job.FileSize
@@ -529,8 +538,8 @@ func processJob(job *uploader.PolledJob) {
 				if downloaded == 0 || speed <= 0 {
 					statusInfo = "⚡ <i>Downloading Telegram file...</i>"
 				}
-				pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
-					job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
+				pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n🖥️ <b>Node:</b> <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+					job.ID, esc(fileName), esc(workerNodeName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
 				editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 			}
 		}
@@ -588,8 +597,8 @@ func processJob(job *uploader.PolledJob) {
 										if uploaded == 0 || speed <= 0 {
 											statusInfo = "⚡ <i>Streaming to Google Drive...</i>"
 										}
-										pText := fmt.Sprintf("☁️ <b>Streaming to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
-											job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(uploaded), formatSize(total))
+										pText := fmt.Sprintf("☁️ <b>Streaming to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n🖥️ <b>Node:</b> <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+											job.ID, esc(fileName), esc(workerNodeName), progressBar(pct), int(pct), statusInfo, formatSize(uploaded), formatSize(total))
 										editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 									}
 								})
