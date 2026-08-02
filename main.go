@@ -316,8 +316,12 @@ func processJob(job *uploader.PolledJob) {
 				}
 				go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
 				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
-					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
-						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(downloaded), formatSize(total))
+					statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
+					if downloaded == 0 || speed <= 0 {
+						statusInfo = "⚡ <i>Fetching Telegram stream...</i>"
+					}
+					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+						job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
 					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 				}
 			})
@@ -393,8 +397,12 @@ func processJob(job *uploader.PolledJob) {
 				}
 				go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
 				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
-					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
-						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(downloaded), formatSize(total))
+					statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
+					if downloaded == 0 || speed <= 0 {
+						statusInfo = "⚡ <i>Fetching Telegram stream...</i>"
+					}
+					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+						job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
 					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 				}
 			})

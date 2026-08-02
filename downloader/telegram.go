@@ -24,8 +24,8 @@ type TelegramFileDownloader struct {
 func NewTelegramFileDownloader(botToken string) *TelegramFileDownloader {
 	baseURL := "https://api.telegram.org"
 
-	// Check if local Bot API server is running on port 8081
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 2*time.Second)
+	// Check if local Bot API server is running on port 8081 (fast 100ms probe)
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 100*time.Millisecond)
 	if err == nil {
 		conn.Close()
 		baseURL = "http://127.0.0.1:8081"
@@ -57,7 +57,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	}
 	destPath := filepath.Join(destDir, fileName)
 
-	// Step 1: Call getFile to get the file_path with 3x retry & fallback
+	// Step 1: Call getFile to get the file_path with fast retries
 	var filePath string
 	var lastErr error
 	apiServers := []string{tfd.APIBaseURL}
@@ -66,7 +66,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	}
 
 	for _, server := range apiServers {
-		for attempt := 1; attempt <= 3; attempt++ {
+		for attempt := 1; attempt <= 2; attempt++ {
 			getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", server, tfd.BotToken, fileID)
 			req, err := http.NewRequestWithContext(ctx, "GET", getFileURL, nil)
 			if err != nil {
@@ -77,7 +77,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				lastErr = err
-				time.Sleep(time.Duration(attempt*2) * time.Second)
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 
@@ -91,11 +91,7 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 			}
 
 			lastErr = fmt.Errorf("getFile failed (status %d): %s", resp.StatusCode, string(body[:min(len(body), 150)]))
-			if resp.StatusCode == 429 {
-				time.Sleep(time.Duration(attempt*4) * time.Second)
-			} else {
-				time.Sleep(time.Duration(attempt*2) * time.Second)
-			}
+			time.Sleep(500 * time.Millisecond)
 		}
 		if filePath != "" {
 			break
