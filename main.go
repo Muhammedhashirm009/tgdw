@@ -270,12 +270,18 @@ func processJob(job *uploader.PolledJob) {
 	os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir) // Cleanup after job
 
+	cancelKeyboard := map[string]interface{}{
+		"inline_keyboard": [][]map[string]string{
+			{{"text": "❌ Cancel Task", "callback_data": "cancel_task|" + job.ID}},
+		},
+	}
+
 	// Instant first response: send "starting" progress immediately when job is picked up
 	go daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, job.FileSize, 0, 0)
 	if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 		pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] 0%%</code>\n\n⚡ 0 B/s • ⏳ calculating...\n📦 0 B / %s",
 			job.ID, esc(job.FileName), progressBar(0), formatSize(job.FileSize))
-		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, true)
+		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, true)
 	}
 
 	var downloadedPath string
@@ -312,7 +318,7 @@ func processJob(job *uploader.PolledJob) {
 				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
 						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(downloaded), formatSize(total))
-					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, false)
+					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 				}
 			})
 
@@ -389,7 +395,7 @@ func processJob(job *uploader.PolledJob) {
 				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
 						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(downloaded), formatSize(total))
-					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, false)
+					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 				}
 			})
 
@@ -536,7 +542,7 @@ func processJob(job *uploader.PolledJob) {
 				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
 					pText := fmt.Sprintf("☁️ <b>Uploading to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
 						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(uploaded), formatSize(total))
-					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, false)
+					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
 				}
 			})
 
