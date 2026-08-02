@@ -63,9 +63,8 @@ func NewDriveUploader(ctx context.Context, token *oauth2.Token, clientID, client
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-		ReadBufferSize:        8 * 1024 * 1024, // 8MB Socket Buffer
-		WriteBufferSize:       8 * 1024 * 1024, // 8MB Socket Buffer
+		ReadBufferSize:        16 * 1024 * 1024, // 16MB Socket Read Buffer
+		WriteBufferSize:       16 * 1024 * 1024, // 16MB Socket Write Buffer
 	}
 	ctxWithClient := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: highSpeedTransport})
 	httpClient := oauth2.NewClient(ctxWithClient, config.TokenSource(ctxWithClient, token))
@@ -186,7 +185,7 @@ func (du *DriveUploader) UploadStream(ctx context.Context, reader io.Reader, fil
 		f.Parents = []string{folderID}
 	}
 
-	res, err := du.client.Files.Create(f).Media(progressRdr, googleapi.ChunkSize(32*1024*1024)).Context(ctx).Do()
+	res, err := du.client.Files.Create(f).Media(progressRdr, googleapi.ChunkSize(64*1024*1024)).Context(ctx).Do()
 	if err != nil {
 		return "", "", err
 	}

@@ -106,6 +106,11 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 		return "", fmt.Errorf("getFile failed after retries: %v", lastErr)
 	}
 
+	// Fire immediate initial progress callback
+	if callback != nil {
+		callback(0, knownFileSize, 0)
+	}
+
 	// Step 2: Download the file
 	if tfd.APIBaseURL == "http://127.0.0.1:8081" {
 		// Local Bot API stores files directly on disk under /var/lib/telegram-bot-api/bot<token>/<filePath>
