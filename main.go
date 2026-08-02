@@ -772,6 +772,11 @@ func processJob(job *uploader.PolledJob) {
 	fileName := filepath.Base(downloadedPath)
 
 	daemon.SendJobProgress(job.ID, "uploading", 0.0, 0, fileSize, 0, 0)
+	if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+		uText := fmt.Sprintf("☁️ <b>Uploading to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n🖥️ <b>Node:</b> <code>%s</code>\n<code>[░░░░░░░░░░░░░░░░░░░░] 0%%</code>\n\n⚡ <i>Initializing Google Drive Upload...</i>\n📦 0 B / %s",
+			job.ID, esc(fileName), esc(workerNodeName), formatSize(fileSize))
+		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), uText, cancelKeyboard, false)
+	}
 
 	if len(activeAccounts) == 0 {
 		daemon.SendJobFail(job.ID, "No active Google Drive storage account available")

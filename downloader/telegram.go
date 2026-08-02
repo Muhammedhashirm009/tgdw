@@ -151,7 +151,11 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 	}
 
 	for _, server := range apiServers {
-		for attempt := 1; attempt <= 2; attempt++ {
+		attempts := 2
+		if strings.HasPrefix(server, "http://127.0.0.1") || strings.HasPrefix(server, "http://localhost") {
+			attempts = 5
+		}
+		for attempt := 1; attempt <= attempts; attempt++ {
 			getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", server, tfd.BotToken, fileID)
 			req, err := http.NewRequestWithContext(ctx, "GET", getFileURL, nil)
 			if err != nil {
@@ -176,8 +180,8 @@ func (tfd *TelegramFileDownloader) DownloadByFileID(ctx context.Context, fileID,
 			}
 
 			lastErrStr := string(body[:min(len(body), 150)])
-			if strings.Contains(lastErrStr, "file is too big") {
-				return "", fmt.Errorf("Telegram Bot API 20MB limit reached: file is too big for standard API. Local Bot API server or MTProto client required")
+			if server == "https://api.telegram.org" && strings.Contains(lastErrStr, "file is too big") {
+				return "", fmt.Errorf("Telegram Bot API 20MB limit reached: file is too big for standard API. Local Bot API server required")
 			}
 			lastErr = fmt.Errorf("getFile failed (status %d): %s", resp.StatusCode, lastErrStr)
 			time.Sleep(500 * time.Millisecond)
