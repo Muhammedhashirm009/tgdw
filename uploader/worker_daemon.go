@@ -56,6 +56,8 @@ type PolledJob struct {
 	FileName           string                    `json:"fileName"`
 	FileSize           int64                     `json:"fileSize"`
 	CancelRequested    int                       `json:"cancelRequested"`
+	TelegramChatID     string                    `json:"telegramChatId"`
+	TelegramMessageID  interface{}               `json:"telegramMessageId"`
 }
 
 type PollJobResponse struct {

@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/downloader/telegram-cloud-transfer/downloader"
@@ -18,6 +21,86 @@ import (
 
 var daemon *uploader.WorkerDaemon
 var workerConfig *uploader.WorkerConfig
+var directMsgState sync.Map
+
+func esc(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+func progressBar(percent float64) string {
+	p := int(percent)
+	if p < 0 {
+		p = 0
+	}
+	if p > 100 {
+		p = 100
+	}
+	filled := p / 5
+	empty := 20 - filled
+	return strings.Repeat("█", filled) + strings.Repeat("░", empty)
+}
+
+func formatSize(bytes int64) string {
+	if bytes <= 0 {
+		return "0 B"
+	}
+	const k = 1024
+	sizes := []string{"B", "KB", "MB", "GB", "TB"}
+	i := 0
+	val := float64(bytes)
+	for val >= k && i < len(sizes)-1 {
+		val /= k
+		i++
+	}
+	return fmt.Sprintf("%.2f %s", val, sizes[i])
+}
+
+func editTelegramDirect(chatId, msgId string, text string, replyMarkup interface{}, force bool) {
+	if chatId == "" || msgId == "" || msgId == "0" || msgId == "<nil>" {
+		return
+	}
+	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	if botToken == "" {
+		botToken = os.Getenv("BOT_TOKEN")
+	}
+	if botToken == "" {
+		botToken = "8946065502:AAGzG1AT1KMjBfvzL8Bjon0_T6i4HyWllCc"
+	}
+
+	key := chatId + ":" + msgId
+	now := time.Now()
+
+	if !force {
+		if last, ok := directMsgState.Load(key); ok {
+			if now.Sub(last.(time.Time)) < 3*time.Second {
+				return
+			}
+		}
+	}
+	directMsgState.Store(key, now)
+
+	payload := map[string]interface{}{
+		"chat_id":    chatId,
+		"message_id": msgId,
+		"text":       text,
+		"parse_mode": "HTML",
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Post("https://api.telegram.org/bot"+botToken+"/editMessageText", "application/json", bytes.NewBuffer(bodyBytes))
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+}
 
 func main() {
 	log.Println("===========================================")
@@ -172,14 +255,18 @@ func processJob(job *uploader.PolledJob) {
 	defer os.RemoveAll(tmpDir) // Cleanup after job
 
 	// Instant first response: send "starting" progress immediately when job is picked up
-	daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, job.FileSize, 0, 0)
+	go daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, job.FileSize, 0, 0)
+	if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+		pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] 0%%</code>\n\n⚡ 0 B/s • ⏳ calculating...\n📦 0 B / %s",
+			job.ID, esc(job.FileName), progressBar(0), formatSize(job.FileSize))
+		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, true)
+	}
 
 	var downloadedPath string
 	var dlErr error
 
 	switch job.JobType {
 	case "http_url":
-		// Download via HTTP
 		fileName := job.FileName
 		if fileName == "" {
 			parts := strings.Split(job.SourceInput, "/")
@@ -191,8 +278,6 @@ func processJob(job *uploader.PolledJob) {
 				fileName = "download_" + job.ID
 			}
 		}
-
-		daemon.SendJobProgress(job.ID, "downloading", 5.0, 0, 0, 0, 0)
 
 		downloadedPath, dlErr = downloader.DownloadHTTP(ctx, job.SourceInput, tmpDir, fileName,
 			func(downloaded, total, speed int64) {
@@ -207,7 +292,12 @@ func processJob(job *uploader.PolledJob) {
 						eta = (total - downloaded) / speed
 					}
 				}
-				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
+				go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
+				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
+						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(downloaded), formatSize(total))
+					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, false)
+				}
 			})
 
 	case "torrent_magnet":
@@ -279,7 +369,12 @@ func processJob(job *uploader.PolledJob) {
 						eta = (total - downloaded) / speed
 					}
 				}
-				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
+				go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
+				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+					pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
+						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(downloaded), formatSize(total))
+					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, false)
+				}
 			})
 
 	case "torrent_file":
@@ -421,7 +516,12 @@ func processJob(job *uploader.PolledJob) {
 						eta = (total - uploaded) / speed
 					}
 				}
-				daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
+				go daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
+				if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+					pText := fmt.Sprintf("☁️ <b>Uploading to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n⚡ %s/s • ⏳ ~%ds\n📦 %s / %s",
+						job.ID, esc(fileName), progressBar(pct), int(pct), formatSize(speed), eta, formatSize(uploaded), formatSize(total))
+					editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, nil, false)
+				}
 			})
 
 		if uploadErr == nil {
@@ -432,12 +532,29 @@ func processJob(job *uploader.PolledJob) {
 
 	if uploadErr != nil {
 		log.Printf("❌ Upload failed for job %s across all active accounts: %v", job.ID, uploadErr)
-		daemon.SendJobFail(job.ID, "Upload failed: "+uploadErr.Error())
+		go daemon.SendJobFail(job.ID, "Upload failed: "+uploadErr.Error())
 		return
 	}
 
 	log.Printf("✅ Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
-	daemon.SendJobComplete(job.ID, fileId, fileSize, fileName)
+	go daemon.SendJobComplete(job.ID, fileId, fileSize, fileName)
+
+	if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+		driveLink := webLink
+		if driveLink == "" && fileId != "" {
+			driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
+		}
+		cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s\n\n<code>[████████████████████] 100%%</code>",
+			esc(fileName), formatSize(fileSize))
+
+		keyboard := map[string]interface{}{
+			"inline_keyboard": [][]map[string]string{
+				{{"text": "📂 Open in Google Drive", "url": driveLink}},
+				{{"text": "🚀 Open Aurora Play", "url": "https://play.hxdev.in"}},
+			},
+		}
+		editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
+	}
 }
 
 // checkCancelRequested polls the control plane to check if a job's cancel was requested
