@@ -168,14 +168,15 @@ func (d *WorkerDaemon) LoadOrRegister() error {
 		joinToken = "auto_register"
 	}
 
-	regReq := RegistrationRequest{
-		JoinToken: joinToken,
-		Hostname:  hostname,
-		Version:   "2.0.0",
-		Platform:  runtime.GOOS,
-		CPU:       runtime.NumCPU(),
-		Memory:    8192,
-		Region:    os.Getenv("WORKER_REGION"),
+	regReq := map[string]interface{}{
+		"joinToken": joinToken,
+		"name":      workerName,
+		"hostname":  hostname,
+		"version":   "2.0.0",
+		"platform":  runtime.GOOS,
+		"cpu":       runtime.NumCPU(),
+		"memory":    8192,
+		"region":    os.Getenv("WORKER_REGION"),
 	}
 
 	reqBytes, _ := json.Marshal(regReq)
