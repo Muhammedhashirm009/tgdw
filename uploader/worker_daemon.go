@@ -95,6 +95,12 @@ func (d *WorkerDaemon) LoadOrRegister() error {
 		workerURL = os.Getenv("WORKER_PUBLIC_URL")
 	}
 	workerName := os.Getenv("WORKER_NAME")
+	if workerName == "" {
+		workerName = os.Getenv("NAME")
+	}
+	if workerName == "" {
+		workerName = "Aurora Go Upload Worker"
+	}
 
 	hostname, _ := os.Hostname()
 	if hostname == "" {
