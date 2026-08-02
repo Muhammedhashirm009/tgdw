@@ -267,31 +267,42 @@ func main() {
 			}
 			workerName := workerID
 
-			regPayload, _ := json.Marshal(map[string]interface{}{
-				"worker_id": workerID,
-				"name":      workerName,
-				"url":       workerURL,
-				"secret":    os.Getenv("WORKER_SECRET"),
-				"max_jobs":  3,
-			})
+			registerWorker := func() bool {
+				regPayload, _ := json.Marshal(map[string]interface{}{
+					"worker_id": workerID,
+					"name":      workerName,
+					"url":       workerURL,
+					"secret":    os.Getenv("WORKER_SECRET"),
+					"max_jobs":  3,
+				})
 
-			req, _ := http.NewRequest("POST", kingURL+"/api/worker/register", bytes.NewBuffer(regPayload))
-			if req != nil {
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-King-Secret", kingSec)
-				client := &http.Client{Timeout: 5 * time.Second}
-				resp, rErr := client.Do(req)
-				if rErr == nil {
-					resp.Body.Close()
-					log.Printf("👑 Direct King Bot Registration Successful -> %s", kingURL)
+				req, _ := http.NewRequest("POST", kingURL+"/api/worker/register", bytes.NewBuffer(regPayload))
+				if req != nil {
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("X-King-Secret", kingSec)
+					client := &http.Client{Timeout: 5 * time.Second}
+					resp, rErr := client.Do(req)
+					if rErr == nil {
+						resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							log.Printf("👑 Direct King Bot Registration Successful -> %s [Node: %s]", kingURL, workerName)
+							return true
+						}
+					}
 				}
+				return false
 			}
 
-			// Direct Heartbeat to King Bot every 5s
+			// Try initial registration
+			_ = registerWorker()
+
+			// Direct Heartbeat & Auto-Reregistration Loop every 5s
 			hbTicker := time.NewTicker(5 * time.Second)
 			for range hbTicker.C {
 				hbPayload, _ := json.Marshal(map[string]interface{}{
 					"worker_id":   workerID,
+					"name":        workerName,
+					"url":         workerURL,
 					"active_jobs": daemon.ActiveJobs,
 				})
 				hReq, _ := http.NewRequest("POST", kingURL+"/api/worker/heartbeat", bytes.NewBuffer(hbPayload))
@@ -302,6 +313,9 @@ func main() {
 					hResp, hErr := client.Do(hReq)
 					if hErr == nil {
 						hResp.Body.Close()
+					} else {
+						// If heartbeat fails, re-register
+						_ = registerWorker()
 					}
 				}
 			}
