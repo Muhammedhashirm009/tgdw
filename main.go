@@ -445,39 +445,42 @@ func processJob(job *uploader.PolledJob) {
 			fileName = "telegram_file_" + job.ID
 		}
 
+		progressCb := func(downloaded, total, speed int64) {
+			if total <= 0 && job.FileSize > 0 {
+				total = job.FileSize
+			}
+			pct := 0.0
+			var eta int64 = 0
+			if total > 0 {
+				pct = float64(downloaded) / float64(total) * 100.0
+				if speed > 0 && total > downloaded {
+					eta = (total - downloaded) / speed
+				}
+			}
+			if daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta)) {
+				cancel()
+			}
+			if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+				statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
+				if downloaded == 0 || speed <= 0 {
+					statusInfo = "⚡ <i>Downloading Telegram file...</i>"
+				}
+				pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+					job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
+				editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
+			}
+		}
+
 		// 1. If local Bot API Server (port 8081) is active (0ms MTProto direct disk copy matching old bot)
 		if tgDl.APIBaseURL == "http://127.0.0.1:8081" {
 			log.Println("⚡ Using Local Telegram Bot API Server on 127.0.0.1:8081 (0ms MTProto Direct Copy)")
-			downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize,
-				func(downloaded, total, speed int64) {
-					if total <= 0 && job.FileSize > 0 {
-						total = job.FileSize
-					}
-					pct := 0.0
-					var eta int64 = 0
-					if total > 0 {
-						pct = float64(downloaded) / float64(total) * 100.0
-						if speed > 0 && total > downloaded {
-							eta = (total - downloaded) / speed
-						}
-					}
-					go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
-					if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
-						statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
-						if downloaded == 0 || speed <= 0 {
-							statusInfo = "⚡ <i>Local MTProto Fetch...</i>"
-						}
-						pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
-							job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
-						editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
-					}
-				})
+			downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, progressCb)
 		} else {
 			// 2. Fallback for Remote API: Stream directly from Telegram CDN into Google Drive
 			fileURL, fErr := tgDl.GetFileURL(ctx, job.SourceInput)
 			if fErr != nil {
 				log.Printf("⚠️ getFileURL error: %v (falling back to DownloadByFileID)", fErr)
-				downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
+				downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, progressCb)
 			} else {
 				log.Printf("📥 Direct Telegram Stream URL: %s", fileURL)
 				req, reqErr := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
@@ -490,7 +493,7 @@ func processJob(job *uploader.PolledJob) {
 				resp, doErr := downloader.FastClient.Do(req)
 				if doErr != nil || resp.StatusCode >= 400 {
 					log.Printf("⚠️ Direct stream error (status %v), falling back to DownloadByFileID", doErr)
-					downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
+					downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, progressCb)
 				} else {
 					defer resp.Body.Close()
 
