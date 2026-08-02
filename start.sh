@@ -5,10 +5,10 @@ mkdir -p /var/lib/telegram-bot-api
 
 # Ensure default TELEGRAM_API_ID and TELEGRAM_API_HASH if not set
 if [ -z "$TELEGRAM_API_ID" ]; then
-    export TELEGRAM_API_ID="6"
+    export TELEGRAM_API_ID="25467884"
 fi
 if [ -z "$TELEGRAM_API_HASH" ]; then
-    export TELEGRAM_API_HASH="eb0663579bb2297af94017f8a7090b83"
+    export TELEGRAM_API_HASH="05a687da36243593d4eb624f46375341"
 fi
 
 echo "Starting Local Telegram Bot API Server on port 8081 (API_ID: ${TELEGRAM_API_ID})..."

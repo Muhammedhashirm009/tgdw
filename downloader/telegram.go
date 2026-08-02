@@ -25,14 +25,24 @@ type TelegramFileDownloader struct {
 func NewTelegramFileDownloader(botToken string) *TelegramFileDownloader {
 	baseURL := "https://api.telegram.org"
 
-	// Check if local Bot API server is running on port 8081 (fast 100ms probe)
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 100*time.Millisecond)
-	if err == nil {
-		conn.Close()
-		baseURL = "http://127.0.0.1:8081"
-		log.Println("📲 Using local Telegram Bot API server (no file size limit)")
+	localURL := os.Getenv("LOCAL_BOT_API_URL")
+	if localURL == "" {
+		localURL = os.Getenv("BOT_API_SERVER")
+	}
+
+	if localURL != "" {
+		baseURL = strings.TrimRight(localURL, "/")
+		log.Printf("📲 Configured Local Telegram Bot API Server: %s", baseURL)
 	} else {
-		log.Println("⚠️ Local Bot API server not available, using standard API (20MB limit)")
+		// Check if local Bot API server is running on port 8081 (fast 500ms probe)
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			baseURL = "http://127.0.0.1:8081"
+			log.Println("📲 Using local Telegram Bot API server at 127.0.0.1:8081 (no 20MB file limit)")
+		} else {
+			log.Println("⚠️ Local Bot API server not available on 127.0.0.1:8081, using standard API (20MB limit)")
+		}
 	}
 
 	return &TelegramFileDownloader{
