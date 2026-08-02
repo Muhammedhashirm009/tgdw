@@ -73,7 +73,7 @@ func main() {
 
 	// 4. Job Polling Ticker Loop with Strict Local Concurrency Enforcement
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond) // Fast polling for instant first response (old bot was in-process)
 		for range ticker.C {
 			maxAllowed := 2
 			if workerConfig != nil && workerConfig.MaxConcurrentJobs > 0 {
@@ -133,6 +133,9 @@ func processJob(job *uploader.PolledJob) {
 	tmpDir := filepath.Join(os.TempDir(), "aurora-worker", job.ID)
 	os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir) // Cleanup after job
+
+	// Instant first response: send "starting" progress immediately when job is picked up
+	daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, job.FileSize, 0, 0)
 
 	var downloadedPath string
 	var dlErr error
