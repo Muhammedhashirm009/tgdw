@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -107,7 +108,28 @@ func processJob(job *uploader.PolledJob) {
 		}
 	}()
 
-	ctx := context.Background()
+	// BUG 1 fix: Cancel-aware context that polls control plane every 10s
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Background goroutine to check for cancel_requested from control plane
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if checkCancelRequested(job.ID) {
+					log.Printf("🚫 Cancel requested for job %s, aborting...", job.ID)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
 	tmpDir := filepath.Join(os.TempDir(), "aurora-worker", job.ID)
 	os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir) // Cleanup after job
@@ -218,6 +240,59 @@ func processJob(job *uploader.PolledJob) {
 				daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
 			})
 
+	case "torrent_file":
+		// BUG 10 fix: Download .torrent file from Telegram first, then use torrent downloader
+		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+		if botToken == "" {
+			daemon.SendJobFail(job.ID, "Missing TELEGRAM_BOT_TOKEN env var")
+			return
+		}
+
+		tgDl := downloader.NewTelegramFileDownloader(botToken)
+		daemon.SendJobProgress(job.ID, "downloading", 0.0, 0, 0, 0, 0)
+
+		torrentFileName := job.FileName
+		if torrentFileName == "" {
+			torrentFileName = "download.torrent"
+		}
+
+		torrentPath, torrentDlErr := tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, torrentFileName, job.FileSize, nil)
+		if torrentDlErr != nil {
+			daemon.SendJobFail(job.ID, "Failed to download .torrent file: "+torrentDlErr.Error())
+			return
+		}
+
+		td, tdErr := downloader.NewTorrentDownloader(tmpDir)
+		if tdErr != nil {
+			daemon.SendJobFail(job.ID, "Failed to init torrent client: "+tdErr.Error())
+			return
+		}
+		defer td.Close()
+
+		downloadedPath, dlErr = td.DownloadFile(ctx, torrentPath,
+			func(name string, completed, total, speed int64, peers int) {
+				pct := 0.0
+				var eta int64 = 0
+				if total > 0 {
+					pct = float64(completed) / float64(total) * 100.0
+					if speed > 0 && total > completed {
+						eta = (total - completed) / speed
+					}
+				}
+				daemon.SendJobProgress(job.ID, "downloading", pct, completed, total, speed, int(eta))
+			})
+
+		// If torrent downloaded a directory, zip it
+		if dlErr == nil {
+			info, _ := os.Stat(downloadedPath)
+			if info != nil && info.IsDir() {
+				zipPath := downloadedPath + ".zip"
+				if zErr := downloader.ZipDirectory(downloadedPath, zipPath); zErr == nil {
+					downloadedPath = zipPath
+				}
+			}
+		}
+
 	default:
 		daemon.SendJobFail(job.ID, "Unknown job type: "+job.JobType)
 		return
@@ -319,4 +394,36 @@ func processJob(job *uploader.PolledJob) {
 
 	log.Printf("✅ Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
 	daemon.SendJobComplete(job.ID, fileId, fileSize, fileName)
+}
+
+// checkCancelRequested polls the control plane to check if a job's cancel was requested
+func checkCancelRequested(jobID string) bool {
+	if daemon == nil || daemon.Creds == nil {
+		return false
+	}
+
+	req, err := http.NewRequest("GET", daemon.Creds.ControlPlaneURL+"/api/workers/jobs/"+jobID, nil)
+	if err != nil {
+		return false
+	}
+
+	req.Header.Set("X-Worker-ID", daemon.Creds.WorkerID)
+	req.Header.Set("X-API-Key", daemon.Creds.APIKey)
+	req.Header.Set("X-API-Secret", daemon.Creds.APISecret)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Simple JSON check for cancel_requested or status=cancelled
+	s := string(body)
+	if strings.Contains(s, `"cancel_requested":1`) || strings.Contains(s, `"status":"cancelled"`) {
+		return true
+	}
+	return false
 }

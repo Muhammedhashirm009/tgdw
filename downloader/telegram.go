@@ -175,6 +175,15 @@ func copyLocalFile(ctx context.Context, src, dst string, callback ProgressCallba
 			}
 		}
 		if readErr == io.EOF {
+			// BUG 7 fix: Fire final 100% callback on EOF
+			if callback != nil && copied > 0 {
+				now := time.Now()
+				speed := int64(0)
+				if now.Sub(lastReport).Seconds() > 0 {
+					speed = int64(float64(copied-lastReportBytes) / now.Sub(lastReport).Seconds())
+				}
+				callback(copied, totalSize, speed)
+			}
 			break
 		}
 		if readErr != nil {
