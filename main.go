@@ -251,8 +251,10 @@ func processJob(job *uploader.PolledJob) {
 		// Download via Telegram Bot API (local server at port 8081 supports any file size)
 		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 		if botToken == "" {
-			daemon.SendJobFail(job.ID, "Missing TELEGRAM_BOT_TOKEN env var")
-			return
+			botToken = os.Getenv("BOT_TOKEN")
+		}
+		if botToken == "" {
+			botToken = "8946065502:AAGzG1AT1KMjBfvzL8Bjon0_T6i4HyWllCc"
 		}
 
 		tgDl := downloader.NewTelegramFileDownloader(botToken)
@@ -284,8 +286,10 @@ func processJob(job *uploader.PolledJob) {
 		// BUG 10 fix: Download .torrent file from Telegram first, then use torrent downloader
 		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 		if botToken == "" {
-			daemon.SendJobFail(job.ID, "Missing TELEGRAM_BOT_TOKEN env var")
-			return
+			botToken = os.Getenv("BOT_TOKEN")
+		}
+		if botToken == "" {
+			botToken = "8946065502:AAGzG1AT1KMjBfvzL8Bjon0_T6i4HyWllCc"
 		}
 
 		tgDl := downloader.NewTelegramFileDownloader(botToken)
