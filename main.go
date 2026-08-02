@@ -446,116 +446,144 @@ func processJob(job *uploader.PolledJob) {
 			fileName = "telegram_file_" + job.ID
 		}
 
-		fileURL, fErr := tgDl.GetFileURL(ctx, job.SourceInput)
-		if fErr != nil {
-			log.Printf("⚠️ getFileURL error: %v (falling back to disk download)", fErr)
-			downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
+		// 1. If local Bot API Server (port 8081) is active (0ms MTProto direct disk copy matching old bot)
+		if tgDl.APIBaseURL == "http://127.0.0.1:8081" {
+			log.Println("⚡ Using Local Telegram Bot API Server on 127.0.0.1:8081 (0ms MTProto Direct Copy)")
+			downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize,
+				func(downloaded, total, speed int64) {
+					if total <= 0 && job.FileSize > 0 {
+						total = job.FileSize
+					}
+					pct := 0.0
+					var eta int64 = 0
+					if total > 0 {
+						pct = float64(downloaded) / float64(total) * 100.0
+						if speed > 0 && total > downloaded {
+							eta = (total - downloaded) / speed
+						}
+					}
+					go daemon.SendJobProgress(job.ID, "downloading", pct, downloaded, total, speed, int(eta))
+					if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+						statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
+						if downloaded == 0 || speed <= 0 {
+							statusInfo = "⚡ <i>Local MTProto Fetch...</i>"
+						}
+						pText := fmt.Sprintf("📥 <b>Downloading [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+							job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(downloaded), formatSize(total))
+						editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
+					}
+				})
 		} else {
-			log.Printf("📥 Direct Telegram Stream URL: %s", fileURL)
-			req, reqErr := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
-			if reqErr != nil {
-				daemon.SendJobFail(job.ID, "Failed to create stream request: "+reqErr.Error())
-				return
-			}
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-
-			resp, doErr := downloader.FastClient.Do(req)
-			if doErr != nil || resp.StatusCode >= 400 {
-				log.Printf("⚠️ Direct stream error (status %v), falling back to disk download", doErr)
+			// 2. Fallback for Remote API: Stream directly from Telegram CDN into Google Drive
+			fileURL, fErr := tgDl.GetFileURL(ctx, job.SourceInput)
+			if fErr != nil {
+				log.Printf("⚠️ getFileURL error: %v (falling back to DownloadByFileID)", fErr)
 				downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
 			} else {
-				defer resp.Body.Close()
-
-				realSize := resp.ContentLength
-				if realSize <= 0 {
-					realSize = job.FileSize
+				log.Printf("📥 Direct Telegram Stream URL: %s", fileURL)
+				req, reqErr := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
+				if reqErr != nil {
+					daemon.SendJobFail(job.ID, "Failed to create stream request: "+reqErr.Error())
+					return
 				}
+				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
-				// Direct Stream to Google Drive (matching old bot)
-				if len(activeAccounts) > 0 {
-					var streamUploadErr error
-					for idx, uploaderAcc := range activeAccounts {
-						webLink, fileId, streamUploadErr = uploaderAcc.UploadStream(ctx, resp.Body, fileName, realSize,
-							func(uploaded, total, speed int64) {
-								if total <= 0 && realSize > 0 {
-									total = realSize
-								}
-								pct := 0.0
-								var eta int64 = 0
-								if total > 0 {
-									pct = float64(uploaded) / float64(total) * 100.0
-									if speed > 0 && total > uploaded {
-										eta = (total - uploaded) / speed
-									}
-								}
-								go daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
-								if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
-									statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
-									if uploaded == 0 || speed <= 0 {
-										statusInfo = "⚡ <i>Streaming to Google Drive...</i>"
-									}
-									pText := fmt.Sprintf("☁️ <b>Streaming to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
-										job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(uploaded), formatSize(total))
-									editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
-								}
-							})
-						if streamUploadErr == nil {
-							break
-						}
-						log.Printf("⚠️ Stream upload error on account #%d: %v", idx+1, streamUploadErr)
+				resp, doErr := downloader.FastClient.Do(req)
+				if doErr != nil || resp.StatusCode >= 400 {
+					log.Printf("⚠️ Direct stream error (status %v), falling back to DownloadByFileID", doErr)
+					downloadedPath, dlErr = tgDl.DownloadByFileID(ctx, job.SourceInput, tmpDir, fileName, job.FileSize, nil)
+				} else {
+					defer resp.Body.Close()
+
+					realSize := resp.ContentLength
+					if realSize <= 0 {
+						realSize = job.FileSize
 					}
 
-					if streamUploadErr == nil && fileId != "" {
-						// Stream upload succeeded! Finish job immediately!
-						log.Printf("✅ Stream Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
-						go daemon.SendJobComplete(job.ID, fileId, realSize, fileName)
-
-						cpURL := "https://aurora-worker.muhammedhashirm4.workers.dev"
-						apiKey := ""
-						if daemon != nil && daemon.Creds != nil {
-							cpURL = daemon.Creds.ControlPlaneURL
-							apiKey = daemon.Creds.APIKey
-						}
-						acctID := ""
-						if job.GDriveAccount != nil {
-							acctID = job.GDriveAccount.ID
-						}
-
-						syncPayload := map[string]interface{}{
-							"title":                  fileName,
-							"drive_file_id":          fileId,
-							"drive_link":             webLink,
-							"gdrive_account_id":      acctID,
-							"file_size":              realSize,
-							"uploaded_by_telegram_id": job.TelegramChatID,
-						}
-
-						catalogID, syncErr := SyncCatalogToWorker(cpURL, apiKey, syncPayload)
-						playerLink := "https://play.hxdev.in"
-						addedNote := ""
-						if syncErr == nil && catalogID > 0 {
-							log.Printf("🎉 Catalog Synced Successfully! CatalogID=%d", catalogID)
-							playerLink = fmt.Sprintf("https://play.hxdev.in/#/detail/%d", catalogID)
-							addedNote = fmt.Sprintf("\n\n🎬 <b>Added to Aurora Play</b> (Catalog ID: %d)", catalogID)
-						}
-
-						if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
-							driveLink := webLink
-							if driveLink == "" && fileId != "" {
-								driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
+					if len(activeAccounts) > 0 {
+						var streamUploadErr error
+						for idx, uploaderAcc := range activeAccounts {
+							webLink, fileId, streamUploadErr = uploaderAcc.UploadStream(ctx, resp.Body, fileName, realSize,
+								func(uploaded, total, speed int64) {
+									if total <= 0 && realSize > 0 {
+										total = realSize
+									}
+									pct := 0.0
+									var eta int64 = 0
+									if total > 0 {
+										pct = float64(uploaded) / float64(total) * 100.0
+										if speed > 0 && total > uploaded {
+											eta = (total - uploaded) / speed
+										}
+									}
+									go daemon.SendJobProgress(job.ID, "uploading", pct, uploaded, total, speed, int(eta))
+									if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+										statusInfo := fmt.Sprintf("⚡ %s/s • ⏳ ~%ds", formatSize(speed), eta)
+										if uploaded == 0 || speed <= 0 {
+											statusInfo = "⚡ <i>Streaming to Google Drive...</i>"
+										}
+										pText := fmt.Sprintf("☁️ <b>Streaming to Google Drive [#%s]</b>\n\n📄 <code>%s</code>\n<code>[%s] %d%%</code>\n\n%s\n📦 %s / %s",
+											job.ID, esc(fileName), progressBar(pct), int(pct), statusInfo, formatSize(uploaded), formatSize(total))
+										editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), pText, cancelKeyboard, false)
+									}
+								})
+							if streamUploadErr == nil {
+								break
 							}
-							cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
-								esc(fileName), formatSize(realSize), addedNote)
-
-							keyboard := map[string]interface{}{
-								"inline_keyboard": [][]map[string]string{
-									{{"text": "📂 Open in Google Drive", "url": driveLink}},
-									{{"text": "🚀 Stream & Download on Aurora Play", "url": playerLink}},
-								},
-							}
-							editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
+							log.Printf("⚠️ Stream upload error on account #%d: %v", idx+1, streamUploadErr)
 						}
-						return // Stream upload complete!
+
+						if streamUploadErr == nil && fileId != "" {
+							log.Printf("✅ Stream Job %s Complete: fileId=%s link=%s", job.ID, fileId, webLink)
+							go daemon.SendJobComplete(job.ID, fileId, realSize, fileName)
+
+							cpURL := "https://aurora-worker.muhammedhashirm4.workers.dev"
+							apiKey := ""
+							if daemon != nil && daemon.Creds != nil {
+								cpURL = daemon.Creds.ControlPlaneURL
+								apiKey = daemon.Creds.APIKey
+							}
+							acctID := ""
+							if job.GDriveAccount != nil {
+								acctID = job.GDriveAccount.ID
+							}
+
+							syncPayload := map[string]interface{}{
+								"title":                  fileName,
+								"drive_file_id":          fileId,
+								"drive_link":             webLink,
+								"gdrive_account_id":      acctID,
+								"file_size":              realSize,
+								"uploaded_by_telegram_id": job.TelegramChatID,
+							}
+
+							catalogID, syncErr := SyncCatalogToWorker(cpURL, apiKey, syncPayload)
+							playerLink := "https://play.hxdev.in"
+							addedNote := ""
+							if syncErr == nil && catalogID > 0 {
+								log.Printf("🎉 Catalog Synced Successfully! CatalogID=%d", catalogID)
+								playerLink = fmt.Sprintf("https://play.hxdev.in/#/detail/%d", catalogID)
+								addedNote = fmt.Sprintf("\n\n🎬 <b>Added to Aurora Play</b> (Catalog ID: %d)", catalogID)
+							}
+
+							if job.TelegramChatID != "" && fmt.Sprint(job.TelegramMessageID) != "" {
+								driveLink := webLink
+								if driveLink == "" && fileId != "" {
+									driveLink = "https://drive.google.com/file/d/" + fileId + "/view"
+								}
+								cText := fmt.Sprintf("✅ <b>Upload Complete!</b>\n\n📄 <b>File:</b> <code>%s</code>\n📦 <b>Size:</b> %s%s\n\n<code>[████████████████████] 100%%</code>",
+									esc(fileName), formatSize(realSize), addedNote)
+
+								keyboard := map[string]interface{}{
+									"inline_keyboard": [][]map[string]string{
+										{{"text": "📂 Open in Google Drive", "url": driveLink}},
+										{{"text": "🚀 Stream & Download on Aurora Play", "url": playerLink}},
+									},
+								}
+								editTelegramDirect(job.TelegramChatID, fmt.Sprint(job.TelegramMessageID), cText, keyboard, true)
+							}
+							return
+						}
 					}
 				}
 			}
